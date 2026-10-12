@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>２分法 アルゴリズム可視化</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0fdf4; }
+        canvas { touch-action: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        
+        // アイコンコンポーネント
+        const PlayIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
+        const PauseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
+        const RefreshIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>;
+        const ChevronRightIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+
+        const BisectionMethod = () => {
+            // シミュレーションの状態
+            // step -3: 開始前
+            // step -2: a0 設定
+            // step -1: b0 設定
+            // step 0: c0 計算 (ループ開始直前)
+            // step 1~: ループ
+            const [step, setStep] = useState(-3);
+            const [a, setA] = useState(-1);
+            const [b, setB] = useState(2.5);
+            const [history, setHistory] = useState([]);
+            const [isPlaying, setIsPlaying] = useState(false);
+            
+            // 対象関数: f(x) = x^3 - x - 2
+            const func = (x) => Math.pow(x, 3) - x - 2;
+            
+            // Canvas設定
+            const canvasRef = useRef(null);
+            const width = 600;
+            const height = 400;
+            const xMin = -2;
+            const xMax = 4;
+            const yMin = -5;
+            const yMax = 15;
+
+            // 座標変換ヘルパー
+            const toCanvasX = (x) => ((x - xMin) / (xMax - xMin)) * width;
+            const toCanvasY = (y) => height - ((y - yMin) / (yMax - yMin)) * height;
+
+            // 初期化
+            useEffect(() => {
+                resetSimulation();
+            }, []);
+
+            // 自動再生ロジック
+            useEffect(() => {
+                let interval;
+                if (isPlaying) {
+                    interval = setInterval(() => {
+                        handleNextStep();
+                    }, 1500);
+                }
+                return () => clearInterval(interval);
+            }, [isPlaying, step, a, b]);
+
+            const resetSimulation = () => {
+                setStep(-3);
+                setA(-1);
+                setB(2.5);
+                setHistory([]);
+                setIsPlaying(false);
+            };
+
+            const handleNextStep = () => {
+                // 初期化フェーズ (-3 -> 0)
+                if (step < 0) {
+                    setStep(prev => prev + 1);
+                    return;
+                }
+
+                // 反復フェーズ (0 -> ...)
+                const c = (a + b) / 2;
+                const fa = func(a);
+                const fc = func(c);
+
+                // 解の精度が十分なら停止
+                if (Math.abs(b - a) < 0.001) {
+                    setIsPlaying(false);
+                    return;
+                }
+
+                // 履歴保存（今の状態を保存）
+                setHistory(prev => [...prev, { a, b, c, step }]);
+                
+                // 次の状態へ更新
+                if (fa * fc < 0) {
+                    setB(c);
+                } else {
+                    setA(c);
+                }
+                setStep(prev => prev + 1);
+            };
+
+            // 描画ロジック
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, width, height);
+
+                // --- 背景・軸・グラフ描画 ---
+                ctx.strokeStyle = '#e5e7eb';
+                ctx.lineWidth = 1;
+                
+                // X軸
+                ctx.beginPath();
+                ctx.moveTo(0, toCanvasY(0));
+                ctx.lineTo(width, toCanvasY(0));
+                ctx.strokeStyle = '#374151';
+                ctx.stroke();
+
+                // Y軸
+                ctx.beginPath();
+                ctx.moveTo(toCanvasX(0), 0);
+                ctx.lineTo(toCanvasX(0), height);
+                ctx.strokeStyle = '#374151';
+                ctx.stroke();
+
+                // 関数の描画 f(x)
+                ctx.beginPath();
+                ctx.strokeStyle = '#4b5563';
+                ctx.lineWidth = 2;
+                for (let px = 0; px <= width; px++) {
+                    const x = xMin + (px / width) * (xMax - xMin);
+                    const y = func(x);
+                    if (px === 0) ctx.moveTo(px, toCanvasY(y));
+                    else ctx.lineTo(px, toCanvasY(y));
+                }
+                ctx.stroke();
+
+                // --- シミュレーション要素の描画 ---
+                
+                // 区間のシェーディング（aとbが決まっている場合のみ）
+                if (step >= -1) {
+                    ctx.fillStyle = 'rgba(59, 130, 246, 0.1)';
+                    ctx.fillRect(toCanvasX(a), 0, toCanvasX(b) - toCanvasX(a), height);
+                }
+
+                const drawPoint = (x, color, label, isMidpoint = false) => {
+                    const y = func(x);
+                    const cx = toCanvasX(x);
+                    const cy = toCanvasY(y);
+
+                    // 垂線
+                    ctx.beginPath();
+                    ctx.setLineDash([5, 5]);
+                    ctx.moveTo(cx, toCanvasY(0));
+                    ctx.lineTo(cx, cy);
+                    ctx.strokeStyle = color;
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // 点
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, isMidpoint ? 6 : 4, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+
+                    // X軸上の位置
+                    ctx.beginPath();
+                    ctx.arc(cx, toCanvasY(0), 4, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+
+                    // ラベル
+                    ctx.fillStyle = '#1f2937';
+                    ctx.font = isMidpoint ? 'bold 16px sans-serif' : '14px sans-serif';
+                    ctx.fillText(label, cx + 5, toCanvasY(0) + 20);
+                };
+
+                // ステップに応じて要素を順次描画
+                if (step >= -2) {
+                    drawPoint(a, '#2563eb', `a`, false); // 左端
+                }
+                if (step >= -1) {
+                    drawPoint(b, '#dc2626', `b`, false); // 右端
+                }
+                if (step >= 0) {
+                    const c = (a + b) / 2;
+                    drawPoint(c, '#16a34a', `c`, true);  // 中点
+                }
+
+            }, [a, b, step, isPlaying]);
+
+            // 現在の値の計算（表示用）
+            const c = (a + b) / 2;
+            const fa = func(a);
+            const fb = func(b);
+            const fc = func(c);
+
+            // ステップごとの説明テキスト
+            const getStatusMessage = () => {
+                if (step === -3) return "シミュレーションを開始します。「自動再生」または「次へ」を押してください。";
+                if (step === -2) return `まず、区間の左端を決めます。初期値 a₀ = ${a}`;
+                if (step === -1) return `次に、区間の右端を決めます。初期値 b₀ = ${b}。この区間に解（交点）が含まれています。`;
+                
+                const signCheck = fa * fc < 0;
+                const str1 = signCheck 
+                    ? `f(a)とf(c)は異符号です。解は左側 [a, c] にあるため、b を c に更新します。` 
+                    : `f(a)とf(c)は同符号です。解は右側 [c, b] にあるため、a を c に更新します。`;
+                if (step === 0) return `初期設定完了。ここから反復計算に入ります。まず最初の中点 c₀ = (${a} + ${b}) / 2 = ${c} を計算します。${str1}` ;
+                return str1; 
+            };
+
+            return (
+                <div className="flex flex-col items-center p-6 max-w-4xl mx-auto bg-white rounded-xl shadow-lg my-8">
+                    <h1 className="text-2xl font-bold mb-2 text-gray-800">２分法 (Bisection Method) アルゴリズム</h1>
+                    
+                    <div className="relative border-2 border-gray-200 rounded-lg overflow-hidden cursor-crosshair mb-4 bg-white">
+                        <canvas 
+                            ref={canvasRef} 
+                            width={width} 
+                            height={height}
+                            className="w-full h-auto"
+                        />
+                        {/* 状態表示オーバーレイ */}
+                        <div className="absolute top-4 left-4 bg-white/90 p-3 rounded shadow backdrop-blur-sm border border-gray-200 text-sm min-w-[200px]">
+                            <div className="font-bold mb-1 border-b pb-1">
+                                {step < 0 ? "準備フェーズ" : `反復ステップ: ${step}`}
+                            </div>
+                            
+                            {step >= -2 && (
+                                <div className="flex items-center gap-2 text-blue-600 animate-in fade-in slide-in-from-left-4 duration-500">
+                                    <span className="w-4 h-4 rounded-full bg-blue-600 inline-block"></span>
+                                    a = {a.toFixed(3)}
+                                </div>
+                            )}
+                            {step >= -1 && (
+                                <div className="flex items-center gap-2 text-red-600 animate-in fade-in slide-in-from-right-4 duration-500">
+                                    <span className="w-4 h-4 rounded-full bg-red-600 inline-block"></span>
+                                    b = {b.toFixed(3)}
+                                </div>
+                            )}
+                            {step >= 0 && (
+                                <div className="flex items-center gap-2 text-green-600 font-bold mt-1 pt-1 border-t border-gray-200 animate-in zoom-in duration-300">
+                                    <span className="w-4 h-4 rounded-full bg-green-600 inline-block"></span>
+                                    c = {c.toFixed(3)}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="w-full bg-blue-50 p-4 rounded-lg mb-6 border border-blue-100 min-h-[100px] flex items-center justify-center text-center">
+                        <div>
+                            <h3 className="font-bold text-blue-800 mb-1">現在の状況</h3>
+                            <p className="text-lg text-blue-900 leading-relaxed">
+                                {getStatusMessage()}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-4 mb-8">
+                        <button 
+                            onClick={resetSimulation}
+                            className="flex items-center gap-2 px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
+                        >
+                            <RefreshIcon /> 最初から
+                        </button>
+                        
+                        <button 
+                            onClick={() => setIsPlaying(!isPlaying)}
+                            className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-colors font-bold text-white ${
+                                isPlaying ? 'bg-amber-500 hover:bg-amber-600' : 'bg-green-600 hover:bg-green-700'
+                            }`}
+                        >
+                            {isPlaying ? <><PauseIcon /> 停止</> : <><PlayIcon /> 自動再生</>}
+                        </button>
+
+                        <button 
+                            onClick={handleNextStep}
+                            disabled={isPlaying}
+                            className="flex items-center gap-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-bold shadow-md"
+                        >
+                             {step < 0 ? "次へ" : "1ステップ進む"} <ChevronRightIcon />
+                        </button>
+                    </div>
+
+                    <div className="w-full text-sm text-gray-500 border-t pt-4">
+                        <h4 className="font-bold mb-2">反復履歴　（対象関数: f(x) = x^3 - x - 2）</h4>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full text-left">
+                                <thead>
+                                    <tr className="border-b">
+                                        <th className="py-1">Step</th>
+                                        <th className="py-1">a (左)</th>
+                                        <th className="py-1">b (右)</th>
+                                        <th className="py-1">c (中点)</th>
+                                        <th className="py-1">f(c)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {history.length === 0 ? (
+                                        <tr><td colSpan="5" className="py-4 text-center text-gray-400">履歴はまだありません</td></tr>
+                                    ) : (
+                                        history.slice(-5).reverse().map((h, i) => (
+                                            <tr key={i} className="border-b border-gray-100">
+                                                <td className="py-1">{h.step}</td>
+                                                <td className="py-1 text-blue-600">{h.a.toFixed(5)}</td>
+                                                <td className="py-1 text-red-600">{h.b.toFixed(5)}</td>
+                                                <td className="py-1 font-bold">{h.c.toFixed(5)}</td>
+                                                <td className="py-1">{func(h.c).toFixed(5)}</td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<BisectionMethod />);
+    </script>
+</body>
+</html>
