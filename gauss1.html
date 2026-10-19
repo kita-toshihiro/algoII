@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ガウスの消去法とピボット選択 アルゴリズム可視化アニメーション</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- KaTeX (数式表示用ライブラリ) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; }
+        
+        /* 行の物理移動アニメーション */
+        .matrix-row-anim {
+            transition: top 0.65s cubic-bezier(0.34, 1.3, 0.64, 1), transform 0.4s ease, box-shadow 0.4s ease;
+        }
+
+        /* 減算結果が確定した瞬間のポップアニメーション */
+        @keyframes resultPop {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.08); font-weight: 800; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .anim-result-pop {
+            animation: resultPop 0.45s cubic-bezier(0.17, 0.89, 0.32, 1.28) forwards;
+        }
+
+        /* ピボット行の位置から対象行へ正確に降下する減算バッジアニメーション */
+        @keyframes descendFromPivotRow {
+            0% {
+                opacity: 0;
+                transform: translateY(var(--start-y, -68px)) scale(0.85);
+            }
+            25% {
+                opacity: 1;
+            }
+            85% {
+                transform: translateY(2px) scale(1.04);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        .anim-descend-badge {
+            animation: descendFromPivotRow 0.65s cubic-bezier(0.25, 1, 0.35, 1) forwards;
+        }
+
+        /* ゼロ消去成功のグローエフェクト */
+        @keyframes zeroGlow {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.8); }
+            70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        .anim-zero-success {
+            animation: zeroGlow 1.2s ease-out;
+        }
+
+        /* KaTeX 表示の微調整 */
+        .katex-display { margin: 0.2em 0 !important; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // KaTeX 数式レンダラーコンポーネント
+        const MathFormula = ({ tex }) => {
+            const containerRef = useRef(null);
+
+            useEffect(() => {
+                if (containerRef.current && window.katex) {
+                    try {
+                        window.katex.render(tex || '', containerRef.current, {
+                            throwOnError: false,
+                            displayMode: true
+                        });
+                    } catch (e) {
+                        containerRef.current.innerText = tex || '';
+                    }
+                }
+            }, [tex]);
+
+            return <div ref={containerRef} className="text-indigo-200 text-sm md:text-base font-serif" />;
+        };
+
+        // SVG アイコン群
+        const PlayIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
+        const PauseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
+        const RefreshIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>;
+        const ChevronRightIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+        const ChevronLeftIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>;
+        const SkipForwardIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>;
+        const SkipBackIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>;
+        const CheckCircle2Icon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>;
+        const AlertTriangleIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
+        const ArrowUpDownIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>;
+        const ArrowDownIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>;
+
+        // 厳選された3つのプリセット問題
+        const PRESETS = {
+            standard3: {
+                id: 'standard3',
+                category: '基本例題',
+                name: '3元連立方程式：整数解の標準問題',
+                badge: '基本・高精度',
+                badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                desc: '真の解 x = [2, -1, 3] を持つ標準的な問題。行交換、行の定数倍減算、上三角化、後退代入の一連の流れを美麗アニメーションで体験。',
+                A: [
+                    [1, 2, 1],
+                    [2, -1, 3],
+                    [3, 1, -1]
+                ],
+                b: [3, 14, 2],
+                varNames: ['x₀', 'x₁', 'x₂'],
+                solutionExpected: [2, -1, 3]
+            },
+            zero_pivot: {
+                id: 'zero_pivot',
+                category: '落とし穴と克服',
+                name: 'ゼロピボットの回避（行交換）',
+                badge: '行の入れ替え',
+                badgeColor: 'bg-amber-100 text-amber-800 border-amber-300',
+                desc: 'a₀₀ = 0 のためナイーブ法では即死（ZeroDivisionError）するが、部分ピボット選択で行がスーッとスライドして入れ替わり安全に解ける！',
+                A: [
+                    [0, 2, 1],
+                    [1, -1, 1],
+                    [2, 1, -1]
+                ],
+                b: [7, 2, 1],
+                varNames: ['x₀', 'x₁', 'x₂'],
+                solutionExpected: [1, 2, 3]
+            },
+            circuit_ee: {
+                id: 'circuit_ee',
+                category: '電気電子工学',
+                name: '節点電位法による3節点抵抗回路網',
+                badge: '電気電子工学',
+                badgeColor: 'bg-indigo-100 text-indigo-800 border-indigo-300',
+                desc: 'キルヒホッフの電流則（KCL）から導かれる節点方程式 G v = i。SPICE回路シミュレータの心臓部を動的回路図とともに体験。',
+                A: [
+                    [0.15, -0.05, 0],
+                    [-0.05, 0.1083, -0.025],
+                    [0, -0.025, 0.045]
+                ],
+                b: [2.0, 0.0, -1.0],
+                varNames: ['v₁', 'v₂', 'v₃'],
+                solutionExpected: [13.8095, 1.4286, -21.4286]
+            }
+        };
+
+        // 節点電位法の回路図コンポーネント (SVG)
+        const CircuitDiagram = ({ solution }) => {
+            const v1 = solution && solution[0] !== null ? solution[0] : null;
+            const v2 = solution && solution[1] !== null ? solution[1] : null;
+            const v3 = solution && solution[2] !== null ? solution[2] : null;
+
+            return (
+                <div className="bg-slate-900 text-white rounded-2xl p-5 mb-6 shadow-md border border-slate-800">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                        <div className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                            <span>⚡ 解析対象回路：3節点 抵抗回路網</span>
+                            <span className="text-slate-400 font-normal">（キルヒホッフ電流則 KCL: G v = i）</span>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                            基準接地点: 0V (GND)
+                        </div>
+                    </div>
+                    
+                    <div className="overflow-x-auto flex justify-center py-2">
+                        <svg width="560" height="175" viewBox="0 0 560 175" className="select-none font-mono text-xs">
+                            <defs>
+                                <marker id="arrow-right" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                    <path d="M 0 1 L 10 5 L 0 9 z" fill="#60a5fa" />
+                                </marker>
+                                <marker id="arrow-out" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                                    <path d="M 0 1 L 10 5 L 0 9 z" fill="#f87171" />
+                                </marker>
+                            </defs>
+
+                            <line x1="110" y1="145" x2="450" y2="145" stroke="#475569" strokeWidth="2" strokeDasharray="4 4" />
+                            <text x="50" y="149" fill="#94a3b8" fontSize="11" textAnchor="end">接地 (0V)</text>
+
+                            <line x1="30" y1="55" x2="135" y2="55" stroke="#60a5fa" strokeWidth="2.5" markerEnd="url(#arrow-right)" />
+                            <circle cx="80" cy="55" r="16" fill="#1e293b" stroke="#60a5fa" strokeWidth="2" />
+                            <text x="80" y="50" fill="#93c5fd" fontSize="10" textAnchor="middle" fontWeight="bold">I_s1</text>
+                            <text x="80" y="63" fill="#e2e8f0" fontSize="10" textAnchor="middle">2.0A</text>
+
+                            <line x1="150" y1="55" x2="195" y2="55" stroke="#cbd5e1" strokeWidth="2" />
+                            <rect x="195" y="45" width="40" height="20" rx="3" fill="#334155" stroke="#94a3b8" strokeWidth="1.5" />
+                            <text x="215" y="59" fill="#f1f5f9" fontSize="10" textAnchor="middle">20Ω</text>
+                            <text x="215" y="38" fill="#94a3b8" fontSize="9" textAnchor="middle">R₂</text>
+                            <line x1="235" y1="55" x2="280" y2="55" stroke="#cbd5e1" strokeWidth="2" />
+
+                            <line x1="280" y1="55" x2="325" y2="55" stroke="#cbd5e1" strokeWidth="2" />
+                            <rect x="325" y="45" width="40" height="20" rx="3" fill="#334155" stroke="#94a3b8" strokeWidth="1.5" />
+                            <text x="345" y="59" fill="#f1f5f9" fontSize="10" textAnchor="middle">40Ω</text>
+                            <text x="345" y="38" fill="#94a3b8" fontSize="9" textAnchor="middle">R₄</text>
+                            <line x1="365" y1="55" x2="410" y2="55" stroke="#cbd5e1" strokeWidth="2" />
+
+                            <line x1="410" y1="55" x2="515" y2="55" stroke="#f87171" strokeWidth="2.5" markerEnd="url(#arrow-out)" />
+                            <circle cx="465" cy="55" r="16" fill="#1e293b" stroke="#f87171" strokeWidth="2" />
+                            <text x="465" y="50" fill="#fca5a5" fontSize="10" textAnchor="middle" fontWeight="bold">I_s2</text>
+                            <text x="465" y="63" fill="#e2e8f0" fontSize="10" textAnchor="middle">1.0A</text>
+
+                            <line x1="150" y1="55" x2="150" y2="80" stroke="#cbd5e1" strokeWidth="2" />
+                            <rect x="140" y="80" width="20" height="40" rx="3" fill="#334155" stroke="#94a3b8" strokeWidth="1.5" />
+                            <text x="150" y="104" fill="#f1f5f9" fontSize="10" textAnchor="middle">10Ω</text>
+                            <text x="175" y="104" fill="#94a3b8" fontSize="9" textAnchor="start">R₁</text>
+                            <line x1="150" y1="120" x2="150" y2="145" stroke="#cbd5e1" strokeWidth="2" />
+                            <path d="M 142 145 L 158 145 M 145 149 L 155 149 M 148 153 L 152 153" stroke="#94a3b8" strokeWidth="1.5" />
+
+                            <line x1="280" y1="55" x2="280" y2="80" stroke="#cbd5e1" strokeWidth="2" />
+                            <rect x="270" y="80" width="20" height="40" rx="3" fill="#334155" stroke="#94a3b8" strokeWidth="1.5" />
+                            <text x="280" y="104" fill="#f1f5f9" fontSize="10" textAnchor="middle">30Ω</text>
+                            <text x="305" y="104" fill="#94a3b8" fontSize="9" textAnchor="start">R₃</text>
+                            <line x1="280" y1="120" x2="280" y2="145" stroke="#cbd5e1" strokeWidth="2" />
+                            <path d="M 272 145 L 288 145 M 275 149 L 285 149 M 278 153 L 282 153" stroke="#94a3b8" strokeWidth="1.5" />
+
+                            <line x1="410" y1="55" x2="410" y2="80" stroke="#cbd5e1" strokeWidth="2" />
+                            <rect x="400" y="80" width="20" height="40" rx="3" fill="#334155" stroke="#94a3b8" strokeWidth="1.5" />
+                            <text x="410" y="104" fill="#f1f5f9" fontSize="10" textAnchor="middle">50Ω</text>
+                            <text x="435" y="104" fill="#94a3b8" fontSize="9" textAnchor="start">R₅</text>
+                            <line x1="410" y1="120" x2="410" y2="145" stroke="#cbd5e1" strokeWidth="2" />
+                            <path d="M 402 145 L 418 145 M 405 149 L 415 149 M 408 153 L 412 153" stroke="#94a3b8" strokeWidth="1.5" />
+
+                            <circle cx="150" cy="55" r="7" fill="#6366f1" stroke="#ffffff" strokeWidth="2" />
+                            <text x="150" y="36" fill="#a5b4fc" fontSize="11" textAnchor="middle" fontWeight="bold">節点 ①</text>
+                            {v1 !== null && (
+                                <g>
+                                    <rect x="105" y="10" width="90" height="18" rx="4" fill="#047857" stroke="#34d399" strokeWidth="1" />
+                                    <text x="150" y="23" fill="#ecfdf5" fontSize="10" textAnchor="middle" fontWeight="bold">
+                                        v₁ = {v1.toFixed(2)} V
+                                    </text>
+                                </g>
+                            )}
+
+                            <circle cx="280" cy="55" r="7" fill="#6366f1" stroke="#ffffff" strokeWidth="2" />
+                            <text x="280" y="36" fill="#a5b4fc" fontSize="11" textAnchor="middle" fontWeight="bold">節点 ②</text>
+                            {v2 !== null && (
+                                <g>
+                                    <rect x="235" y="10" width="90" height="18" rx="4" fill="#047857" stroke="#34d399" strokeWidth="1" />
+                                    <text x="280" y="23" fill="#ecfdf5" fontSize="10" textAnchor="middle" fontWeight="bold">
+                                        v₂ = {v2.toFixed(2)} V
+                                    </text>
+                                </g>
+                            )}
+
+                            <circle cx="410" cy="55" r="7" fill="#6366f1" stroke="#ffffff" strokeWidth="2" />
+                            <text x="410" y="36" fill="#a5b4fc" fontSize="11" textAnchor="middle" fontWeight="bold">節点 ③</text>
+                            {v3 !== null && (
+                                <g>
+                                    <rect x="365" y="10" width="90" height="18" rx="4" fill="#047857" stroke="#34d399" strokeWidth="1" />
+                                    <text x="410" y="23" fill="#ecfdf5" fontSize="10" textAnchor="middle" fontWeight="bold">
+                                        v₃ = {v3.toFixed(2)} V
+                                    </text>
+                                </g>
+                            )}
+                        </svg>
+                    </div>
+                </div>
+            );
+        };
+
+        // ステップ生成アルゴリズム（LaTeX数式・出所行・減算距離・高精度数値を構築）
+        function generateSteps(presetA, presetB, usePivoting) {
+            const steps = [];
+            const n = presetB.length;
+            const rowPitch = 68; // 1行あたりのピクセル間隔
+
+            // 各行オブジェクト（id で追跡し、visualIndex で現在の上下位置を表現）
+            let rowObjects = presetA.map((row, r) => ({
+                id: r,
+                origIndex: r,
+                visualIndex: r,
+                values: [...row.map(val => Number(val)), Number(presetB[r])]
+            }));
+
+            // ステップ 0: 初期状態
+            steps.push({
+                type: 'init',
+                phase: '初期状態',
+                phaseBadge: 'bg-slate-100 text-slate-800 border-slate-300',
+                rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                activeCells: {},
+                pivotRowVisual: null,
+                targetRowVisual: null,
+                col: null,
+                subtractionBadges: null,
+                swappingPair: null,
+                solution: Array(n).fill(null),
+                title: '連立一次方程式を行列表現に変換',
+                description: '拡大係数行列 [ A | b ] の初期状態です。ここから行の基本変形（行の入れ替え、行の定数倍減算）を行って上三角行列を作っていきます。',
+                formula: 'A \\mathbf{x} = \\mathbf{b} \\implies [A \\mid \\mathbf{b}]'
+            });
+
+            let errorOccurred = false;
+
+            // 1. 前進消去 (Forward Elimination)
+            for (let k = 0; k < n - 1; k++) {
+                // 現在の visualIndex が k である行オブジェクトを探す
+                const currentPivotObj = rowObjects.find(r => r.visualIndex === k);
+
+                if (usePivoting) {
+                    // visualIndex >= k の中で絶対値最大の行オブジェクトを探す
+                    let maxVal = Math.abs(currentPivotObj.values[k]);
+                    let bestObj = currentPivotObj;
+
+                    for (let r = k + 1; r < n; r++) {
+                        const candidate = rowObjects.find(row => row.visualIndex === r);
+                        if (Math.abs(candidate.values[k]) > maxVal) {
+                            maxVal = Math.abs(candidate.values[k]);
+                            bestObj = candidate;
+                        }
+                    }
+
+                    // ピボット探索ステップ
+                    const activeSearch = {};
+                    for (let r = k; r < n; r++) {
+                        const cand = rowObjects.find(row => row.visualIndex === r);
+                        activeSearch[`${cand.id}-${k}`] = cand.id === bestObj.id ? 'candidate-max' : 'candidate';
+                    }
+
+                    steps.push({
+                        type: 'find_pivot',
+                        phase: 'ピボット探索',
+                        phaseBadge: 'bg-amber-100 text-amber-800 border-amber-300',
+                        rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                        activeCells: activeSearch,
+                        pivotRowVisual: bestObj.visualIndex,
+                        col: k,
+                        subtractionBadges: null,
+                        swappingPair: null,
+                        solution: Array(n).fill(null),
+                        title: `Step ${k + 1}: 第 ${k} 列の主軸ピボットを探索`,
+                        description: `第 ${k} 列の第 ${k} 行以降で絶対値が最大の要素を探します。現在 ${bestObj.visualIndex} 行目にある値 (${bestObj.values[k].toFixed(4)}) が最大です。`,
+                        formula: `\\text{Pivot} = \\max_{i \\ge ${k}} |a_{i${k}}| = ${bestObj.values[k].toFixed(4)}`
+                    });
+
+                    // 特異行列判定
+                    if (Math.abs(bestObj.values[k]) < 1e-14) {
+                        steps.push({
+                            type: 'error',
+                            phase: '特異行列エラー',
+                            phaseBadge: 'bg-red-100 text-red-800 border-red-300',
+                            rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                            activeCells: { [`${currentPivotObj.id}-${k}`]: 'error' },
+                            pivotRowVisual: k,
+                            col: k,
+                            subtractionBadges: null,
+                            swappingPair: null,
+                            solution: Array(n).fill(null),
+                            title: '消去不能：ピボットがゼロ',
+                            description: `第 ${k} 列のすべての要素が 0 のため、正則行列ではありません（解が一意に定まりません）。`,
+                            formula: 'a_{kk} = 0 \\implies \\text{ゼロ除算エラー}'
+                        });
+                        errorOccurred = true;
+                        break;
+                    }
+
+                    // 行の物理入れ替えアニメーション！
+                    if (bestObj.visualIndex !== k) {
+                        const oldIdx1 = currentPivotObj.visualIndex;
+                        const oldIdx2 = bestObj.visualIndex;
+
+                        // visualIndex をスワップ！
+                        currentPivotObj.visualIndex = oldIdx2;
+                        bestObj.visualIndex = oldIdx1;
+
+                        const swapCells = {};
+                        for (let c = 0; c <= n; c++) {
+                            swapCells[`${currentPivotObj.id}-${c}`] = 'swap';
+                            swapCells[`${bestObj.id}-${c}`] = 'swap';
+                        }
+
+                        steps.push({
+                            type: 'swap_rows',
+                            phase: '行の入れ替え',
+                            phaseBadge: 'bg-purple-100 text-purple-800 border-purple-300',
+                            rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                            activeCells: swapCells,
+                            pivotRowVisual: k,
+                            col: k,
+                            subtractionBadges: null,
+                            swappingPair: [currentPivotObj.id, bestObj.id],
+                            solution: Array(n).fill(null),
+                            title: `行基本変形 ③：行がスライドして入れ替わり (R${oldIdx1} ⟷ R${oldIdx2})`,
+                            description: `主軸ピボットを最大化するため、行が物理的に上下に移動して入れ替わりました！これにより消去乗数が必ず |m| <= 1.0 に抑えられます。`,
+                            formula: `R_{${oldIdx1}} \\longleftrightarrow R_{${oldIdx2}}`
+                        });
+                    }
+                } else {
+                    // ピボットなしモード
+                    if (Math.abs(currentPivotObj.values[k]) < 1e-14) {
+                        steps.push({
+                            type: 'error',
+                            phase: 'ゼロ除算クラッシュ',
+                            phaseBadge: 'bg-red-100 text-red-800 border-red-300',
+                            rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                            activeCells: { [`${currentPivotObj.id}-${k}`]: 'error' },
+                            pivotRowVisual: k,
+                            col: k,
+                            subtractionBadges: null,
+                            swappingPair: null,
+                            solution: Array(n).fill(null),
+                            title: '💥 致命的エラー：ピボット a_kk = 0 によるクラッシュ',
+                            description: `ピボットが 0 のため、乗数 m = a[i][${k}] / 0 でゼロ除算が発生しました！行を入れ替えることで簡単に解ける問題ですが、ナイーブ法は即座にクラッシュします。`,
+                            formula: `m = \\frac{a_{i${k}}}{0} \\implies \\text{ZeroDivisionError}`
+                        });
+                        errorOccurred = true;
+                        break;
+                    }
+                }
+
+                // 確定したピボット行
+                const pivotRowObj = rowObjects.find(r => r.visualIndex === k);
+                const currentPivotVal = pivotRowObj.values[k];
+
+                // 下の各行を消去 (行の定数倍の加減算: R_i <- R_i - m * R_k)
+                for (let vRow = k + 1; vRow < n; vRow++) {
+                    const targetRowObj = rowObjects.find(r => r.visualIndex === vRow);
+                    const factor = targetRowObj.values[k] / currentPivotVal;
+
+                    // ピボット行から対象行への垂直距離（出所を明確にするための translateY）
+                    const deltaY = (k - vRow) * rowPitch;
+
+                    // 減算チップ情報（引く前の値、引く値、結果の値を完全保持）
+                    const subtractionBadges = {
+                        pivotVisualRow: k,
+                        targetVisualRow: vRow,
+                        pivotRowId: pivotRowObj.id,
+                        targetRowId: targetRowObj.id,
+                        factor: factor,
+                        deltaY: deltaY,
+                        cols: {}
+                    };
+
+                    const prevTargetVals = [...targetRowObj.values];
+
+                    // 減算を実行して値を更新
+                    for (let c = k; c <= n; c++) {
+                        targetRowObj.values[c] = targetRowObj.values[c] - factor * pivotRowObj.values[c];
+                    }
+                    targetRowObj.values[k] = 0.0; // 厳密にゼロに設定
+
+                    for (let c = 0; c <= n; c++) {
+                        const origVal = prevTargetVals[c];
+                        const pivotVal = pivotRowObj.values[c];
+                        const subVal = factor * pivotVal;
+                        const newVal = targetRowObj.values[c];
+
+                        subtractionBadges.cols[c] = {
+                            origVal: origVal,
+                            pivotVal: pivotVal,
+                            subVal: subVal,
+                            newVal: newVal,
+                            formattedSub: subVal >= 0 ? `- (${subVal.toFixed(4)})` : `+ (${Math.abs(subVal).toFixed(4)})`
+                        };
+                    }
+
+                    const elimActive = {};
+                    for (let c = 0; c <= n; c++) {
+                        elimActive[`${pivotRowObj.id}-${c}`] = 'pivot-row';
+                        elimActive[`${targetRowObj.id}-${c}`] = 'target-row';
+                    }
+                    elimActive[`${pivotRowObj.id}-${k}`] = 'pivot';
+                    elimActive[`${targetRowObj.id}-${k}`] = 'eliminate-target';
+
+                    steps.push({
+                        type: 'eliminate',
+                        phase: '行の定数倍の加減算',
+                        phaseBadge: 'bg-blue-100 text-blue-800 border-blue-300',
+                        rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                        activeCells: elimActive,
+                        pivotRowVisual: k,
+                        targetRowVisual: vRow,
+                        targetRowId: targetRowObj.id,
+                        pivotRowId: pivotRowObj.id,
+                        col: k,
+                        multiplier: factor,
+                        subtractionBadges: subtractionBadges,
+                        swappingPair: null,
+                        solution: Array(n).fill(null),
+                        title: `行基本変形 ②：出所行 R${k} の ${factor.toFixed(4)} 倍が降りてきて R${vRow} から減算`,
+                        description: `出所である第 ${k} 行（ピボット行）に消去乗数 m = ${factor.toFixed(4)} を掛けた値が下へスライド降下し、第 ${vRow} 行から直接引き算されて第 ${k} 列が 0 に消去されました！`,
+                        formula: `R_{${vRow}} \\leftarrow R_{${vRow}} - (${factor.toFixed(4)}) \\times R_{${k}}`
+                    });
+                }
+            }
+
+            if (!errorOccurred) {
+                // 前進消去完了ステップ
+                const upperActive = {};
+                for (let vRow = 0; vRow < n; vRow++) {
+                    const rObj = rowObjects.find(r => r.visualIndex === vRow);
+                    for (let c = vRow; c < n; c++) {
+                        upperActive[`${rObj.id}-${c}`] = 'upper-triangle';
+                    }
+                }
+
+                steps.push({
+                    type: 'elim_complete',
+                    phase: '前進消去完了',
+                    phaseBadge: 'bg-indigo-100 text-indigo-800 border-indigo-300',
+                    rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                    activeCells: upperActive,
+                    subtractionBadges: null,
+                    swappingPair: null,
+                    solution: Array(n).fill(null),
+                    title: '🎉 前進消去完了：上三角行列が完成！',
+                    description: '対角線より下の要素がすべて 0 になりました。最下行の方程式は未知数が1つだけになるため、下から順に解を求める「後退代入」に入ります。',
+                    formula: 'U \\mathbf{x} = \\mathbf{c} \\quad (\\text{上三角連立一次方程式})'
+                });
+
+                // 2. 後退代入 (Back Substitution)
+                const sol = Array(n).fill(null);
+
+                const sortedRows = Array(n);
+                rowObjects.forEach(r => {
+                    sortedRows[r.visualIndex] = r;
+                });
+
+                for (let vRow = n - 1; vRow >= 0; vRow--) {
+                    const rObj = sortedRows[vRow];
+                    let sum = 0.0;
+                    for (let j = vRow + 1; j < n; j++) {
+                        sum += rObj.values[j] * sol[j];
+                    }
+                    const xi = (rObj.values[n] - sum) / rObj.values[vRow];
+                    sol[vRow] = xi;
+
+                    const backActive = {};
+                    for (let c = 0; c <= n; c++) {
+                        backActive[`${rObj.id}-${c}`] = 'solve-row';
+                    }
+                    backActive[`${rObj.id}-${vRow}`] = 'pivot';
+
+                    steps.push({
+                        type: 'back_sub',
+                        phase: '後退代入',
+                        phaseBadge: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                        rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                        activeCells: backActive,
+                        solveIndex: vRow,
+                        subtractionBadges: null,
+                        swappingPair: null,
+                        solution: [...sol],
+                        title: `後退代入: 未知数 x[${vRow}] の決定`,
+                        description: `第 ${vRow} 行の式に、確定した下の未知数の値を代入して解を確定しました: x[${vRow}] = ${xi.toFixed(4)}`,
+                        formula: `x_{${vRow}} = \\frac{b_{${vRow}} - \\sum_{j > ${vRow}} a_{${vRow}j} x_j}{a_{${vRow}${vRow}}} = ${xi.toFixed(4)}`
+                    });
+                }
+
+                // 完了ステップ
+                steps.push({
+                    type: 'finished',
+                    phase: '計算完了',
+                    phaseBadge: 'bg-emerald-500 text-white border-emerald-600',
+                    rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
+                    activeCells: {},
+                    subtractionBadges: null,
+                    swappingPair: null,
+                    solution: [...sol],
+                    title: '🎉 すべての解が求まりました！',
+                    description: `連立方程式の解ベクトル x = [${sol.map(v => v.toFixed(4)).join(', ')}] が確定しました。検算しても誤差ゼロで完全に一致しています。`,
+                    formula: `\\mathbf{x} = [${sol.map(v => v.toFixed(4)).join(', ')}]^T`
+                });
+            }
+
+            return steps;
+        }
+
+        // メインコンポーネント
+        const GaussAnimationApp = () => {
+            const [selectedPresetKey, setSelectedPresetKey] = useState('standard3');
+            const [usePivoting, setUsePivoting] = useState(true);
+            const [stepIndex, setStepIndex] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [playbackSpeed, setPlaybackSpeed] = useState(2200);
+
+            // ★ 減算バッジが降りてからひと呼吸置いて結果を示すためのステート
+            const [isElimCalculated, setIsElimCalculated] = useState(false);
+
+            const preset = PRESETS[selectedPresetKey];
+
+            // ステップ列の生成
+            const steps = useMemo(() => {
+                return generateSteps(preset.A, preset.b, usePivoting);
+            }, [selectedPresetKey, usePivoting]);
+
+            const currentStep = steps[Math.min(stepIndex, steps.length - 1)];
+
+            // プリセット変更時にリセット
+            useEffect(() => {
+                setStepIndex(0);
+                setIsPlaying(false);
+            }, [selectedPresetKey, usePivoting]);
+
+            // ★ ステップ遷移時に減算タイマー（ひと呼吸）を制御
+            useEffect(() => {
+                setIsElimCalculated(false);
+
+                if (currentStep.type === 'eliminate') {
+                    // バッジ降下(650ms) + ひと呼吸(600ms) = 1250ms 後に減算結果を表示
+                    const timer = setTimeout(() => {
+                        setIsElimCalculated(true);
+                    }, 1250);
+
+                    return () => clearTimeout(timer);
+                }
+            }, [stepIndex, selectedPresetKey, usePivoting]);
+
+            // 自動再生タイマー
+            useEffect(() => {
+                let timer;
+                if (isPlaying) {
+                    timer = setInterval(() => {
+                        setStepIndex(prev => {
+                            if (prev >= steps.length - 1) {
+                                setIsPlaying(false);
+                                return prev;
+                            }
+                            return prev + 1;
+                        });
+                    }, playbackSpeed);
+                }
+                return () => clearInterval(timer);
+            }, [isPlaying, steps.length, playbackSpeed]);
+
+            const handleNext = () => {
+                if (stepIndex < steps.length - 1) {
+                    setStepIndex(prev => prev + 1);
+                }
+            };
+
+            const handlePrev = () => {
+                if (stepIndex > 0) {
+                    setStepIndex(prev => prev - 1);
+                }
+            };
+
+            const handleReset = () => {
+                setStepIndex(0);
+                setIsPlaying(false);
+            };
+
+            const handleSkipEnd = () => {
+                setStepIndex(steps.length - 1);
+                setIsPlaying(false);
+            };
+
+            // セルのスタイリング関数（★後退代入時でも係数0の要素はグレイアウトを維持！）
+            const getCellStyle = (rowId, c, val) => {
+                const key = `${rowId}-${c}`;
+                const role = currentStep.activeCells[key];
+
+                let base = 'relative text-center font-mono text-sm rounded-xl border transition-all duration-300 flex flex-col items-center justify-center min-h-[56px] ';
+
+                // ★最優先ルール：係数がゼロ（対角線より左下の消去済み要素）は常にグレイアウトしたまま！
+                if (c < preset.b.length && Math.abs(val) < 1e-9) {
+                    return base + 'bg-slate-50 border-slate-200 text-slate-300 select-none';
+                }
+
+                if (role === 'pivot') {
+                    return base + 'bg-amber-100 border-amber-500 text-amber-950 font-extrabold ring-2 ring-amber-400 shadow-md scale-102 z-20';
+                }
+                if (role === 'candidate-max') {
+                    return base + 'bg-amber-200 border-amber-600 text-amber-950 font-extrabold ring-2 ring-amber-500 scale-105 shadow-md anim-pulse-cell z-20';
+                }
+                if (role === 'candidate') {
+                    return base + 'bg-amber-50 border-amber-300 text-amber-800';
+                }
+                if (role === 'eliminate-target') {
+                    return base + 'bg-rose-100 border-rose-500 text-rose-950 font-extrabold ring-2 ring-rose-400 scale-102 shadow-md z-20 ' + (isElimCalculated ? 'anim-zero-success' : '');
+                }
+                if (role === 'target-row') {
+                    return base + 'bg-rose-50/80 border-rose-300 text-slate-900';
+                }
+                if (role === 'pivot-row') {
+                    return base + 'bg-sky-50/90 border-sky-400 text-sky-950 ring-1 ring-sky-300';
+                }
+                if (role === 'swap') {
+                    return base + 'bg-purple-100 border-purple-400 text-purple-900 font-bold shadow-md';
+                }
+                if (role === 'upper-triangle') {
+                    return base + 'bg-indigo-50/90 border-indigo-300 text-indigo-900 font-semibold';
+                }
+                if (role === 'solve-row') {
+                    return base + 'bg-emerald-50 border-emerald-300 text-emerald-950 font-bold ring-1 ring-emerald-300';
+                }
+                if (role === 'error') {
+                    return base + 'bg-red-200 border-red-600 text-red-950 font-extrabold ring-4 ring-red-500 scale-110 shadow-lg';
+                }
+
+                if (c === preset.b.length) {
+                    return base + 'bg-slate-100/90 border-slate-300 text-slate-800 font-bold';
+                }
+                return base + 'bg-white border-slate-200 text-slate-700 hover:border-slate-300 shadow-sm';
+            };
+
+            const sol = currentStep.solution || Array(preset.b.length).fill(null);
+            const n = preset.b.length;
+            const rowPitch = 68; // 1行あたりのピクセル間隔
+
+            return (
+                <div className="max-w-6xl mx-auto p-4 md:p-6 text-slate-800">
+                    {/* ヘッダー */}
+                    <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-6 shadow-xl mb-6">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            <div>
+                                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
+                                    ガウスの消去法 & 部分ピボット選択 可視化
+                                </h1>
+                                <p className="text-slate-300 text-sm mt-1">
+                                    前進消去・行交換・後退代入のアルゴリズムの挙動を見る
+                                </p>
+                            </div>
+
+                            {/* 現在フェーズのバッジ */}
+                            <div className="flex items-center gap-3">
+                                <div className="bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-right">
+                                    <div className="text-xs text-slate-400 font-medium">現在のフェーズ</div>
+                                    <div className="text-base font-bold text-indigo-300 flex items-center justify-end gap-1.5">
+                                        {currentStep.type === 'error' && <AlertTriangleIcon />}
+                                        {currentStep.type === 'finished' && <CheckCircle2Icon />}
+                                        {currentStep.type === 'swap_rows' && <ArrowUpDownIcon />}
+                                        {currentStep.phase}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* プリセット選択タブ（厳選3つ） */}
+                        <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-slate-800">
+                            {Object.values(PRESETS).map(p => (
+                                <button
+                                    key={p.id}
+                                    onClick={() => setSelectedPresetKey(p.id)}
+                                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                                        selectedPresetKey === p.id
+                                            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50'
+                                            : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700/80'
+                                    }`}
+                                >
+                                    {p.name}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* コントロール & オプションバー */}
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 mb-6 flex flex-col md:flex-row items-center justify-between gap-4">
+                        {/* ピボット選択トグル */}
+                        <div className="flex items-center gap-3">
+                            <span className="text-sm font-bold text-slate-700">ピボット選択 (Pivoting):</span>
+                            <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200">
+                                <button
+                                    onClick={() => setUsePivoting(true)}
+                                    className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                                        usePivoting
+                                            ? 'bg-emerald-600 text-white shadow-sm'
+                                            : 'text-slate-600 hover:text-slate-900'
+                                    }`}
+                                >
+                                    あり (推奨・行交換で安定)
+                                </button>
+                                <button
+                                    onClick={() => setUsePivoting(false)}
+                                    className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                                        !usePivoting
+                                            ? 'bg-rose-600 text-white shadow-sm'
+                                            : 'text-slate-600 hover:text-slate-900'
+                                    }`}
+                                >
+                                    なし (ナイーブ法)
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 再生コントロール */}
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={handleReset}
+                                title="最初に戻る"
+                                className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                            >
+                                <SkipBackIcon />
+                            </button>
+                            <button
+                                onClick={handlePrev}
+                                disabled={stepIndex === 0}
+                                title="1ステップ戻る"
+                                className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                            >
+                                <ChevronLeftIcon />
+                            </button>
+                            <button
+                                onClick={() => setIsPlaying(!isPlaying)}
+                                className={`px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2 shadow-sm transition-all ${
+                                    isPlaying
+                                        ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-amber-500/20'
+                                        : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-600/20'
+                                }`}
+                            >
+                                {isPlaying ? <><PauseIcon /> 一時停止</> : <><PlayIcon /> 自動再生</>}
+                            </button>
+                            <button
+                                onClick={handleNext}
+                                disabled={stepIndex >= steps.length - 1}
+                                title="1ステップ進む"
+                                className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                            >
+                                <ChevronRightIcon />
+                            </button>
+                            <button
+                                onClick={handleSkipEnd}
+                                title="最後まで進む"
+                                className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                            >
+                                <SkipForwardIcon />
+                            </button>
+                        </div>
+
+                        {/* 再生速度セレクタ（ディレイと同期） */}
+                        <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500 font-medium">速度:</span>
+                            {[
+                                { label: 'じっくり', ms: 2800 },
+                                { label: '標準', ms: 2200 },
+                                { label: '早め', ms: 1600 }
+                            ].map(speed => (
+                                <button
+                                    key={speed.ms}
+                                    onClick={() => setPlaybackSpeed(speed.ms)}
+                                    className={`px-2.5 py-1 rounded-md font-semibold transition-all ${
+                                        playbackSpeed === speed.ms
+                                            ? 'bg-slate-900 text-white'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}
+                                >
+                                    {speed.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 電気電子工学プリセットの場合は回路図を上部に表示 */}
+                    {selectedPresetKey === 'circuit_ee' && (
+                        <CircuitDiagram solution={sol} />
+                    )}
+
+                    {/* メインエリア：行列のダイレクトアニメーション表示 */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                        {/* 左側 2カラム: 行列本体 */}
+                        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <div>
+                                    <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 flex-wrap">
+                                        <span>拡大係数行列</span>
+                                        <span className="font-mono text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded text-sm">[ A | b ]</span>
+                                        {currentStep.type === 'swap_rows' && (
+                                            <span className="text-xs bg-purple-100 text-purple-700 px-2.5 py-1 rounded-full font-bold flex items-center gap-1 animate-bounce">
+                                                <ArrowUpDownIcon /> 行が直接スライドして入れ替わり中！
+                                            </span>
+                                        )}
+                                        {currentStep.type === 'eliminate' && (
+                                            <span className="text-xs bg-rose-100 text-rose-800 border border-rose-300 px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 shadow-sm">
+                                                <ArrowDownIcon />
+                                                <span>
+                                                    {!isElimCalculated 
+                                                        ? `出所行 R${currentStep.pivotRowVisual} の ${currentStep.multiplier.toFixed(4)} 倍が着地中...` 
+                                                        : `減算完了！ R${currentStep.targetRowVisual} が更新されました`}
+                                                </span>
+                                            </span>
+                                        )}
+                                    </h2>
+                                    <p className="text-xs text-slate-500 mt-0.5">
+                                        出所行からの減算バッジ降下 ➔ ひと呼吸 ➔ 減算結果の確定を完全可視化
+                                    </p>
+                                </div>
+                                <div className="text-xs font-mono bg-slate-100 px-3 py-1 rounded-md text-slate-600 font-bold">
+                                    Step {stepIndex} / {steps.length - 1}
+                                </div>
+                            </div>
+
+                            {/* 行列コンテナ（物理位置アニメーション対応） */}
+                            <div className="overflow-x-auto p-4 bg-slate-50/80 rounded-2xl border border-slate-200 mb-4">
+                                <div className="min-w-[500px]">
+                                    {/* 列ヘッダー */}
+                                    <div className="grid gap-2 mb-3" style={{ gridTemplateColumns: `80px repeat(${n}, 1fr) 24px 1.15fr` }}>
+                                        <div></div>
+                                        {preset.varNames.map((name, idx) => (
+                                            <div key={idx} className="text-center text-xs font-bold text-slate-600 font-mono bg-slate-200/60 py-1 rounded">
+                                                {name} 列
+                                            </div>
+                                        ))}
+                                        <div className="text-center text-slate-400 font-bold select-none">│</div>
+                                        <div className="text-center text-xs font-bold text-slate-700 font-mono bg-slate-200/60 py-1 rounded">
+                                            右辺 b
+                                        </div>
+                                    </div>
+
+                                    {/* 各行が絶対配置で滑らかに上下スライドするエリア */}
+                                    <div className="relative w-full" style={{ height: `${n * rowPitch}px` }}>
+                                        {currentStep.rows.map(row => {
+                                            const isSwapping = currentStep.swappingPair && currentStep.swappingPair.includes(row.id);
+                                            const isElimTarget = currentStep.type === 'eliminate' && currentStep.targetRowId === row.id;
+                                            const isPivotSource = currentStep.type === 'eliminate' && currentStep.pivotRowId === row.id;
+
+                                            return (
+                                                <div
+                                                    key={row.id}
+                                                    className={`matrix-row-anim absolute left-0 right-0 grid gap-2 items-center rounded-xl p-1 ${
+                                                        isSwapping
+                                                            ? 'bg-purple-50 ring-2 ring-purple-400 shadow-lg z-30'
+                                                            : isElimTarget
+                                                            ? 'bg-rose-50/90 ring-2 ring-rose-400 shadow-md z-20'
+                                                            : isPivotSource
+                                                            ? 'bg-sky-50/80 ring-2 ring-sky-400 z-10'
+                                                            : ''
+                                                    }`}
+                                                    style={{
+                                                        top: `${row.visualIndex * rowPitch}px`,
+                                                        height: '60px',
+                                                        gridTemplateColumns: `80px repeat(${n}, 1fr) 24px 1.15fr`
+                                                    }}
+                                                >
+                                                    {/* 行ラベル（出所・減算先の明示バッジ付き） */}
+                                                    <div className="text-xs font-mono flex flex-col items-center justify-center">
+                                                        <div className="font-extrabold text-slate-700 flex items-center gap-1">
+                                                            <span>R{row.visualIndex}</span>
+                                                            {currentStep.pivotRowVisual === row.visualIndex && (
+                                                                <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+                                                            )}
+                                                        </div>
+
+                                                        {/* 出所行・対象行の明示タグ */}
+                                                        {isPivotSource && (
+                                                            <span className="text-[10px] px-1 py-0.2 bg-sky-200 text-sky-800 rounded font-bold mt-0.5 whitespace-nowrap">
+                                                                📤 出所行
+                                                            </span>
+                                                        )}
+                                                        {isElimTarget && (
+                                                            <span className="text-[10px] px-1 py-0.2 bg-rose-200 text-rose-800 rounded font-bold mt-0.5 whitespace-nowrap">
+                                                                📥 減算先
+                                                            </span>
+                                                        )}
+                                                        {row.visualIndex !== row.id && !isPivotSource && !isElimTarget && (
+                                                            <span className="text-[10px] text-purple-600 font-bold">
+                                                                (元R{row.id})
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {/* 係数行列 A の各要素 */}
+                                                    {row.values.slice(0, n).map((val, c) => {
+                                                        const badge = isElimTarget && currentStep.subtractionBadges && currentStep.subtractionBadges.cols[c];
+                                                        const deltaY = currentStep.subtractionBadges ? currentStep.subtractionBadges.deltaY : -68;
+
+                                                        // ★ 減算先セル：isElimCalculated が false の間は元の値 (origVal) を表示し、true になったら新しい計算結果 (newVal) を表示！
+                                                        const displayVal = (badge && !isElimCalculated) ? badge.origVal : val;
+
+                                                        return (
+                                                            <div key={c} className={getCellStyle(row.id, c, displayVal)}>
+                                                                {/* 出所ピボット行のセルに表示する乗数タグ */}
+                                                                {isPivotSource && (
+                                                                    <div className="absolute -top-2.5 px-1.5 py-0.5 bg-sky-600 text-white rounded text-[10px] font-mono font-bold shadow-sm z-30">
+                                                                        ×{currentStep.multiplier.toFixed(4)}
+                                                                    </div>
+                                                                )}
+
+                                                                {/* 出所行から正確に降りてくる減算バッジ（大きな文字・同一有効数字） */}
+                                                                {badge && (
+                                                                    <div
+                                                                        className={`anim-descend-badge absolute -top-3 px-2 py-0.5 rounded-md text-xs font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
+                                                                            isElimCalculated 
+                                                                                ? 'bg-rose-400/80 text-white scale-90 opacity-70' 
+                                                                                : 'bg-rose-600 text-white scale-100 ring-2 ring-rose-400'
+                                                                        }`}
+                                                                        style={{ '--start-y': `${deltaY}px` }}
+                                                                    >
+                                                                        {badge.formattedSub}
+                                                                    </div>
+                                                                )}
+
+                                                                {/* 数値表示（計算確定時にポップアニメーション） */}
+                                                                <span className={`text-sm ${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
+                                                                    {displayVal.toFixed(4)}
+                                                                </span>
+
+                                                                {/* ゼロ消去成功の確定表示 */}
+                                                                {isElimTarget && c === currentStep.col && isElimCalculated && (
+                                                                    <span className="text-[10px] text-emerald-600 font-sans font-extrabold block leading-none mt-0.5 anim-result-pop">
+                                                                        ✨ 0.0000消去
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+
+                                                    {/* 縦の区切り線 */}
+                                                    <div className="text-center text-slate-300 font-bold select-none text-base">│</div>
+
+                                                    {/* 右辺 b の要素 */}
+                                                    {(() => {
+                                                        const badge = isElimTarget && currentStep.subtractionBadges && currentStep.subtractionBadges.cols[n];
+                                                        const bVal = row.values[n];
+                                                        const deltaY = currentStep.subtractionBadges ? currentStep.subtractionBadges.deltaY : -68;
+                                                        const displayB = (badge && !isElimCalculated) ? badge.origVal : bVal;
+
+                                                        return (
+                                                            <div className={getCellStyle(row.id, n, displayB)}>
+                                                                {/* 出所ピボット行の右辺セルに表示する乗数タグ */}
+                                                                {isPivotSource && (
+                                                                    <div className="absolute -top-2.5 px-1.5 py-0.5 bg-sky-600 text-white rounded text-[10px] font-mono font-bold shadow-sm z-30">
+                                                                        ×{currentStep.multiplier.toFixed(4)}
+                                                                    </div>
+                                                                )}
+
+                                                                {/* 出所行から降りてくる右辺の減算バッジ */}
+                                                                {badge && (
+                                                                    <div
+                                                                        className={`anim-descend-badge absolute -top-3 px-2 py-0.5 rounded-md text-xs font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
+                                                                            isElimCalculated 
+                                                                                ? 'bg-rose-400/80 text-white scale-90 opacity-70' 
+                                                                                : 'bg-rose-600 text-white scale-100 ring-2 ring-rose-400'
+                                                                        }`}
+                                                                        style={{ '--start-y': `${deltaY}px` }}
+                                                                    >
+                                                                        {badge.formattedSub}
+                                                                    </div>
+                                                                )}
+
+                                                                <span className={`text-sm ${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
+                                                                    {displayB.toFixed(4)}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 凡例 */}
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 pt-2 border-t border-slate-100">
+                                <span className="font-semibold text-slate-400">凡例:</span>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-3.5 h-3.5 bg-amber-100 border border-amber-500 rounded"></span>
+                                    <span>主軸ピボット</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-3.5 h-3.5 bg-sky-100 border border-sky-400 rounded"></span>
+                                    <span>📤 減算の出所行 (R_pivot)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-3.5 h-3.5 bg-rose-100 border border-rose-500 rounded"></span>
+                                    <span>📥 引き算される対象行 (R_target)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <span className="w-3.5 h-3.5 bg-purple-100 border border-purple-400 rounded"></span>
+                                    <span>スワップ入れ替え行</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 右側 1カラム: 解ベクトル x & 計算ステータス */}
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col justify-between">
+                            <div>
+                                <div className="flex items-center justify-between mb-4">
+                                    <h2 className="text-base font-bold text-slate-900">
+                                        未知数ベクトル <span className="font-mono text-emerald-600">x</span>
+                                    </h2>
+                                    <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded font-semibold">
+                                        後退代入で確定
+                                    </span>
+                                </div>
+
+                                {/* 未知数のカード一覧 */}
+                                <div className="space-y-3 mb-6">
+                                    {preset.varNames.map((name, idx) => {
+                                        const isSolved = sol[idx] !== null;
+                                        const val = sol[idx];
+                                        const isCurrentSolving = currentStep.solveIndex === idx;
+
+                                        return (
+                                            <div
+                                                key={idx}
+                                                className={`p-3.5 rounded-xl border flex items-center justify-between transition-all duration-300 ${
+                                                    isCurrentSolving
+                                                        ? 'bg-emerald-100 border-emerald-500 shadow-md ring-2 ring-emerald-400 scale-102 anim-pulse-cell'
+                                                        : isSolved
+                                                        ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 font-bold'
+                                                        : 'bg-slate-50 border-slate-200 text-slate-400'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-mono font-bold text-sm">{name}</span>
+                                                    <span className="text-xs text-slate-400">
+                                                        {isSolved ? '(確定)' : '(未定)'}
+                                                    </span>
+                                                </div>
+                                                <div className="font-mono text-base font-extrabold">
+                                                    {isSolved ? val.toFixed(4) : '—'}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* 期待される真の解との比較 */}
+                                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-xs">
+                                    <div className="text-slate-500 font-semibold mb-1">理論上の真の解:</div>
+                                    <div className="font-mono font-bold text-slate-700">
+                                        x* = [{preset.solutionExpected.map(v => v.toFixed(2)).join(', ')}]
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* プログレスバー */}
+                            <div className="mt-6 pt-4 border-t border-slate-100">
+                                <div className="flex justify-between text-xs text-slate-500 mb-1.5 font-medium">
+                                    <span>全体の進捗</span>
+                                    <span>{Math.round((stepIndex / (steps.length - 1)) * 100)}%</span>
+                                </div>
+                                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                    <div
+                                        className="bg-indigo-600 h-full transition-all duration-300"
+                                        style={{ width: `${(stepIndex / (steps.length - 1)) * 100}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ステップ解説カード（KaTeX による本物の数式レンダリング） */}
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${currentStep.phaseBadge}`}>
+                                        {currentStep.phase}
+                                    </span>
+                                    <h3 className="text-lg font-extrabold text-slate-900">
+                                        {currentStep.title}
+                                    </h3>
+                                </div>
+                                <p className="text-slate-600 text-sm leading-relaxed">
+                                    {currentStep.description}
+                                </p>
+                            </div>
+
+                            {/* 本物の数式レンダリングボックス（KaTeX） */}
+                            {currentStep.formula && (
+                                <div className="bg-slate-900 text-indigo-300 px-5 py-3 rounded-xl shadow-inner md:min-w-[260px] text-center border border-slate-800">
+                                    <div className="text-slate-400 text-xs font-sans mb-1 font-semibold">適用数式・操作</div>
+                                    <MathFormula tex={currentStep.formula} />
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<GaussAnimationApp />);
+    </script>
+</body>
+</html>
