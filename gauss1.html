@@ -105,15 +105,15 @@
         const ArrowUpDownIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>;
         const ArrowDownIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>;
 
-        // 厳選された3つのプリセット問題
+        // 4つのプリセット問題（3x3、ゼロピボット、5x5スパース、電気回路）
         const PRESETS = {
             standard3: {
                 id: 'standard3',
                 category: '基本例題',
-                name: '3元連立方程式：整数解の標準問題',
-                badge: '基本・高精度',
+                name: '3元連立方程式：標準問題',
+                badge: '基本・整数解',
                 badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-                desc: '真の解 x = [2, -1, 3] を持つ標準的な問題。行交換、行の定数倍減算、上三角化、後退代入の一連の流れを美麗アニメーションで体験。',
+                desc: '真の解 x = [2, -1, 3] を持つ標準的な 3×3 連立一次方程式。前進消去と後退代入の基本フローを体験。',
                 A: [
                     [1, 2, 1],
                     [2, -1, 3],
@@ -129,7 +129,7 @@
                 name: 'ゼロピボットの回避（行交換）',
                 badge: '行の入れ替え',
                 badgeColor: 'bg-amber-100 text-amber-800 border-amber-300',
-                desc: 'a₀₀ = 0 のためナイーブ法では即死（ZeroDivisionError）するが、部分ピボット選択で行がスーッとスライドして入れ替わり安全に解ける！',
+                desc: 'a₀₀ = 0 のためナイーブ法では即座にゼロ除算でクラッシュ！部分ピボット選択で行がスライドして入れ替わり安全に解ける様子を体験。',
                 A: [
                     [0, 2, 1],
                     [1, -1, 1],
@@ -138,6 +138,24 @@
                 b: [7, 2, 1],
                 varNames: ['x₀', 'x₁', 'x₂'],
                 solutionExpected: [1, 2, 3]
+            },
+            sparse5: {
+                id: 'sparse5',
+                category: '応用・疎行列',
+                name: '5元連立方程式：スパース（疎）行列',
+                badge: '5×5 疎行列・行交換あり',
+                badgeColor: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+                desc: 'ゼロ成分を40%含む 5×5 疎行列。主軸ピボット探索によって行交換が複数回発生し、実務らしいリアルな有限小数解（x ≈ [1.5987, -0.1711, 0.5724, 0.6842, 1.0395]）に収束する様子を体験。',
+                A: [
+                    [ 1.0, -2.0,  0.0,  0.0,  1.5],
+                    [-0.5,  2.0, -1.5,  0.0,  0.0],
+                    [ 3.0,  0.0,  1.0, -2.0,  0.0],
+                    [ 0.0,  0.0, -2.0,  1.0, -1.0],
+                    [ 0.0, -1.0,  0.0,  2.5,  3.0]
+                ],
+                b: [3.5, -2.0, 4.0, -1.5, 5.0],
+                varNames: ['x₀', 'x₁', 'x₂', 'x₃', 'x₄'],
+                solutionExpected: [1.5987, -0.1711, 0.5724, 0.6842, 1.0395]
             },
             circuit_ee: {
                 id: 'circuit_ee',
@@ -403,17 +421,18 @@
                         steps.push({
                             type: 'error',
                             phase: 'ゼロ除算クラッシュ',
-                            phaseBadge: 'bg-red-100 text-red-800 border-red-300',
+                            phaseBadge: 'bg-red-100 text-red-800 border-red-300 font-extrabold',
                             rows: rowObjects.map(r => ({ ...r, values: [...r.values] })),
                             activeCells: { [`${currentPivotObj.id}-${k}`]: 'error' },
                             pivotRowVisual: k,
                             col: k,
+                            errorCell: { row: k, col: k, name: `a_{${k}${k}}` },
                             subtractionBadges: null,
                             swappingPair: null,
                             solution: Array(n).fill(null),
-                            title: '💥 致命的エラー：ピボット a_kk = 0 によるクラッシュ',
-                            description: `ピボットが 0 のため、乗数 m = a[i][${k}] / 0 でゼロ除算が発生しました！行を入れ替えることで簡単に解ける問題ですが、ナイーブ法は即座にクラッシュします。`,
-                            formula: `m = \\frac{a_{i${k}}}{0} \\implies \\text{ZeroDivisionError}`
+                            title: `💥 クラッシュ原因：主軸対角要素 a${k}${k} = 0.0000 によるゼロ除算`,
+                            description: `前進消去の乗数は m = a[i][${k}] / a[${k}][${k}] ですが、分母となる対角要素 a[${k}][${k}] が 0 のため、コンピュータはゼロ除算（ZeroDivisionError）を起こして即死しました！方程式には唯一の解が存在するにもかかわらず、ナイーブ法は1ステップ目で解けなくなります。上の【ピボット選択：あり】に切り替えることで、行を交換して安全に解くことができます。`,
+                            formula: `m_{i${k}} = \\frac{a_{i${k}}}{a_{${k}${k}}} = \\frac{a_{i${k}}}{\\mathbf{0}} \\implies \\text{ZeroDivisionError}`
                         });
                         errorOccurred = true;
                         break;
@@ -427,6 +446,12 @@
                 // 下の各行を消去 (行の定数倍の加減算: R_i <- R_i - m * R_k)
                 for (let vRow = k + 1; vRow < n; vRow++) {
                     const targetRowObj = rowObjects.find(r => r.visualIndex === vRow);
+                    
+                    // ★ スパース行列の最適化：元々ゼロの要素は消去演算をスキップ！
+                    if (Math.abs(targetRowObj.values[k]) < 1e-9) {
+                        continue;
+                    }
+
                     const factor = targetRowObj.values[k] / currentPivotVal;
 
                     // ピボット行から対象行への垂直距離（出所を明確にするための translateY）
@@ -586,7 +611,7 @@
             const [isPlaying, setIsPlaying] = useState(false);
             const [playbackSpeed, setPlaybackSpeed] = useState(2200);
 
-            // ★ 減算バッジが降りてからひと呼吸置いて結果を示すためのステート
+            // 減算バッジが降りてからひと呼吸置いて結果を示すためのステート
             const [isElimCalculated, setIsElimCalculated] = useState(false);
 
             const preset = PRESETS[selectedPresetKey];
@@ -604,7 +629,7 @@
                 setIsPlaying(false);
             }, [selectedPresetKey, usePivoting]);
 
-            // ★ ステップ遷移時に減算タイマー（ひと呼吸）を制御
+            // ステップ遷移時に減算タイマー（ひと呼吸）を制御
             useEffect(() => {
                 setIsElimCalculated(false);
 
@@ -657,14 +682,14 @@
                 setIsPlaying(false);
             };
 
-            // セルのスタイリング関数（★後退代入時でも係数0の要素はグレイアウトを維持！）
+            // セルのスタイリング関数（後退代入時でも係数0の要素はグレイアウトを維持）
             const getCellStyle = (rowId, c, val) => {
                 const key = `${rowId}-${c}`;
                 const role = currentStep.activeCells[key];
 
-                let base = 'relative text-center font-mono text-sm rounded-xl border transition-all duration-300 flex flex-col items-center justify-center min-h-[56px] ';
+                let base = 'relative text-center font-mono text-xs md:text-sm rounded-xl border transition-all duration-300 flex flex-col items-center justify-center min-h-[56px] ';
 
-                // ★最優先ルール：係数がゼロ（対角線より左下の消去済み要素）は常にグレイアウトしたまま！
+                // 最優先ルール：係数がゼロ（消去済み要素）は常にグレイアウトしたまま！
                 if (c < preset.b.length && Math.abs(val) < 1e-9) {
                     return base + 'bg-slate-50 border-slate-200 text-slate-300 select-none';
                 }
@@ -738,19 +763,19 @@
                             </div>
                         </div>
 
-                        {/* プリセット選択タブ（厳選3つ） */}
+                        {/* プリセット選択タブ（3x3、ゼロピボット、5x5スパース、電気回路） */}
                         <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-slate-800">
                             {Object.values(PRESETS).map(p => (
                                 <button
                                     key={p.id}
                                     onClick={() => setSelectedPresetKey(p.id)}
-                                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 ${
                                         selectedPresetKey === p.id
-                                            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50'
+                                            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/50 font-bold'
                                             : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700/80'
                                     }`}
                                 >
-                                    {p.name}
+                                    <span>{p.name}</span>
                                 </button>
                             ))}
                         </div>
@@ -891,14 +916,14 @@
                                 </div>
                             </div>
 
-                            {/* 行列コンテナ（物理位置アニメーション対応） */}
+                            {/* 行列コンテナ（物理位置アニメーション対応、5x5 に応じて自動調整） */}
                             <div className="overflow-x-auto p-4 bg-slate-50/80 rounded-2xl border border-slate-200 mb-4">
-                                <div className="min-w-[500px]">
+                                <div className="min-w-[540px]">
                                     {/* 列ヘッダー */}
-                                    <div className="grid gap-2 mb-3" style={{ gridTemplateColumns: `80px repeat(${n}, 1fr) 24px 1.15fr` }}>
+                                    <div className="grid gap-2 mb-3" style={{ gridTemplateColumns: `72px repeat(${n}, minmax(64px, 1fr)) 20px minmax(76px, 1.15fr)` }}>
                                         <div></div>
                                         {preset.varNames.map((name, idx) => (
-                                            <div key={idx} className="text-center text-xs font-bold text-slate-600 font-mono bg-slate-200/60 py-1 rounded">
+                                            <div key={idx} className="text-center text-xs font-bold text-slate-600 font-mono bg-slate-200/60 py-1 rounded truncate">
                                                 {name} 列
                                             </div>
                                         ))}
@@ -930,7 +955,7 @@
                                                     style={{
                                                         top: `${row.visualIndex * rowPitch}px`,
                                                         height: '60px',
-                                                        gridTemplateColumns: `80px repeat(${n}, 1fr) 24px 1.15fr`
+                                                        gridTemplateColumns: `72px repeat(${n}, minmax(64px, 1fr)) 20px minmax(76px, 1.15fr)`
                                                     }}
                                                 >
                                                     {/* 行ラベル（出所・減算先の明示バッジ付き） */}
@@ -944,17 +969,17 @@
 
                                                         {/* 出所行・対象行の明示タグ */}
                                                         {isPivotSource && (
-                                                            <span className="text-[10px] px-1 py-0.2 bg-sky-200 text-sky-800 rounded font-bold mt-0.5 whitespace-nowrap">
-                                                                📤 出所行
+                                                            <span className="text-[9px] px-1 py-0.2 bg-sky-200 text-sky-800 rounded font-bold mt-0.5 whitespace-nowrap">
+                                                                📤出所行
                                                             </span>
                                                         )}
                                                         {isElimTarget && (
-                                                            <span className="text-[10px] px-1 py-0.2 bg-rose-200 text-rose-800 rounded font-bold mt-0.5 whitespace-nowrap">
-                                                                📥 減算先
+                                                            <span className="text-[9px] px-1 py-0.2 bg-rose-200 text-rose-800 rounded font-bold mt-0.5 whitespace-nowrap">
+                                                                📥減算先
                                                             </span>
                                                         )}
                                                         {row.visualIndex !== row.id && !isPivotSource && !isElimTarget && (
-                                                            <span className="text-[10px] text-purple-600 font-bold">
+                                                            <span className="text-[9px] text-purple-600 font-bold">
                                                                 (元R{row.id})
                                                             </span>
                                                         )}
@@ -965,7 +990,7 @@
                                                         const badge = isElimTarget && currentStep.subtractionBadges && currentStep.subtractionBadges.cols[c];
                                                         const deltaY = currentStep.subtractionBadges ? currentStep.subtractionBadges.deltaY : -68;
 
-                                                        // ★ 減算先セル：isElimCalculated が false の間は元の値 (origVal) を表示し、true になったら新しい計算結果 (newVal) を表示！
+                                                        // 減算先セル：isElimCalculated が false の間は元の値 (origVal) を表示し、true になったら新しい計算結果 (newVal) を表示！
                                                         const displayVal = (badge && !isElimCalculated) ? badge.origVal : val;
 
                                                         return (
@@ -977,10 +1002,17 @@
                                                                     </div>
                                                                 )}
 
+                                                                {/* ★ エラー原因セル (a_kk = 0) の強力な警告バッジ */}
+                                                                {currentStep.activeCells[`${row.id}-${c}`] === 'error' && (
+                                                                    <div className="absolute -top-4 px-2.5 py-0.5 bg-red-600 text-white rounded-full text-[11px] font-bold shadow-xl animate-bounce whitespace-nowrap z-50 border-2 border-white ring-2 ring-red-400">
+                                                                        💥 クラッシュ原因: a₀₀ = 0 (分母ゼロ!)
+                                                                    </div>
+                                                                )}
+
                                                                 {/* 出所行から正確に降りてくる減算バッジ（大きな文字・同一有効数字） */}
                                                                 {badge && (
                                                                     <div
-                                                                        className={`anim-descend-badge absolute -top-3 px-2 py-0.5 rounded-md text-xs font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
+                                                                        className={`anim-descend-badge absolute -top-3 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
                                                                             isElimCalculated 
                                                                                 ? 'bg-rose-400/80 text-white scale-90 opacity-70' 
                                                                                 : 'bg-rose-600 text-white scale-100 ring-2 ring-rose-400'
@@ -992,14 +1024,14 @@
                                                                 )}
 
                                                                 {/* 数値表示（計算確定時にポップアニメーション） */}
-                                                                <span className={`text-sm ${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
+                                                                <span className={`${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
                                                                     {displayVal.toFixed(4)}
                                                                 </span>
 
                                                                 {/* ゼロ消去成功の確定表示 */}
                                                                 {isElimTarget && c === currentStep.col && isElimCalculated && (
-                                                                    <span className="text-[10px] text-emerald-600 font-sans font-extrabold block leading-none mt-0.5 anim-result-pop">
-                                                                        ✨ 0.0000消去
+                                                                    <span className="text-[9px] text-emerald-600 font-sans font-extrabold block leading-none mt-0.5">
+                                                                        ✨0消去
                                                                     </span>
                                                                 )}
                                                             </div>
@@ -1028,7 +1060,7 @@
                                                                 {/* 出所行から降りてくる右辺の減算バッジ */}
                                                                 {badge && (
                                                                     <div
-                                                                        className={`anim-descend-badge absolute -top-3 px-2 py-0.5 rounded-md text-xs font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
+                                                                        className={`anim-descend-badge absolute -top-3 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-extrabold shadow-lg border border-white/50 z-40 whitespace-nowrap transition-all duration-300 ${
                                                                             isElimCalculated 
                                                                                 ? 'bg-rose-400/80 text-white scale-90 opacity-70' 
                                                                                 : 'bg-rose-600 text-white scale-100 ring-2 ring-rose-400'
@@ -1039,7 +1071,7 @@
                                                                     </div>
                                                                 )}
 
-                                                                <span className={`text-sm ${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
+                                                                <span className={`${badge && isElimCalculated ? 'anim-result-pop font-extrabold text-slate-900 mt-1' : ''}`}>
                                                                     {displayB.toFixed(4)}
                                                                 </span>
                                                             </div>
@@ -1086,8 +1118,8 @@
                                     </span>
                                 </div>
 
-                                {/* 未知数のカード一覧 */}
-                                <div className="space-y-3 mb-6">
+                                {/* 未知数のカード一覧（5元でも綺麗に収まるようパディング調整） */}
+                                <div className="space-y-2 mb-5">
                                     {preset.varNames.map((name, idx) => {
                                         const isSolved = sol[idx] !== null;
                                         const val = sol[idx];
@@ -1096,7 +1128,7 @@
                                         return (
                                             <div
                                                 key={idx}
-                                                className={`p-3.5 rounded-xl border flex items-center justify-between transition-all duration-300 ${
+                                                className={`p-2.5 rounded-xl border flex items-center justify-between transition-all duration-300 ${
                                                     isCurrentSolving
                                                         ? 'bg-emerald-100 border-emerald-500 shadow-md ring-2 ring-emerald-400 scale-102 anim-pulse-cell'
                                                         : isSolved
@@ -1105,12 +1137,12 @@
                                                 }`}
                                             >
                                                 <div className="flex items-center gap-2">
-                                                    <span className="font-mono font-bold text-sm">{name}</span>
-                                                    <span className="text-xs text-slate-400">
+                                                    <span className="font-mono font-bold text-xs md:text-sm">{name}</span>
+                                                    <span className="text-[10px] text-slate-400">
                                                         {isSolved ? '(確定)' : '(未定)'}
                                                     </span>
                                                 </div>
-                                                <div className="font-mono text-base font-extrabold">
+                                                <div className="font-mono text-xs md:text-sm font-extrabold">
                                                     {isSolved ? val.toFixed(4) : '—'}
                                                 </div>
                                             </div>
@@ -1121,14 +1153,14 @@
                                 {/* 期待される真の解との比較 */}
                                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 text-xs">
                                     <div className="text-slate-500 font-semibold mb-1">理論上の真の解:</div>
-                                    <div className="font-mono font-bold text-slate-700">
-                                        x* = [{preset.solutionExpected.map(v => v.toFixed(2)).join(', ')}]
+                                    <div className="font-mono font-bold text-slate-700 break-words">
+                                        x* ≈ [{preset.solutionExpected.map(v => Number.isInteger(v) ? v : v.toFixed(4)).join(', ')}]
                                     </div>
                                 </div>
                             </div>
 
                             {/* プログレスバー */}
-                            <div className="mt-6 pt-4 border-t border-slate-100">
+                            <div className="mt-5 pt-3 border-t border-slate-100">
                                 <div className="flex justify-between text-xs text-slate-500 mb-1.5 font-medium">
                                     <span>全体の進捗</span>
                                     <span>{Math.round((stepIndex / (steps.length - 1)) * 100)}%</span>
@@ -1162,8 +1194,10 @@
 
                             {/* 本物の数式レンダリングボックス（KaTeX） */}
                             {currentStep.formula && (
-                                <div className="bg-slate-900 text-indigo-300 px-5 py-3 rounded-xl shadow-inner md:min-w-[260px] text-center border border-slate-800">
-                                    <div className="text-slate-400 text-xs font-sans mb-1 font-semibold">適用数式・操作</div>
+                                <div className={`px-5 py-3 rounded-xl shadow-inner md:min-w-[260px] text-center border ${currentStep.type === 'error' ? 'bg-red-950/90 text-red-200 border-red-700 ring-2 ring-red-500/50' : 'bg-slate-900 text-indigo-300 border-slate-800'}`}>
+                                    <div className={`text-xs font-sans mb-1 font-semibold ${currentStep.type === 'error' ? 'text-red-300 font-bold' : 'text-slate-400'}`}>
+                                        {currentStep.type === 'error' ? '💥 ゼロ除算の発生メカニズム' : '適用数式・操作'}
+                                    </div>
                                     <MathFormula tex={currentStep.formula} />
                                 </div>
                             )}
