@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>最急降下法：学習率インタラクティブ実験</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Three.js & OrbitControls for 3D Surface Visualization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #0b1120; color: #f8fafc; }
+        canvas { touch-action: none; }
+        input[type="range"] { accent-color: #38bdf8; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // SVG アイコン
+        const PlayIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
+        const PauseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
+        const StepIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+        const ResetIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>;
+
+        // プリセット定義（1変数 & 2変数3D）
+        const PRESETS = {
+            quad_crit: {
+                id: 'quad_crit',
+                dim: 1,
+                name: '1変数放物線：臨界発散の解明',
+                sub: 'f(x) = 3x² （臨界学習率 η_crit = 2/6 ≈ 0.333）',
+                desc: '二次導関数 f\'\'(x) = 6。学習率が 0.333 を超えると放物線から外へ弾き飛ばされ爆発的に発散します。',
+                formula: 'f(x) = 3x^2',
+                dfFormula: "f'(x) = 6x",
+                optX: 0,
+                optVal: 0,
+                f: (x) => 3.0 * x * x,
+                df: (x) => 6.0 * x,
+                d2f: 6.0,
+                critEta: 2.0 / 6.0,
+                defaultX0: 2.0,
+                defaultEta: 0.16,
+                xRange: [-4.5, 4.5],
+                yRange: [-3, 35],
+                etaPresets: [
+                    { label: '過小 (0.04)', eta: 0.04, desc: '歩幅が小さすぎて遅い' },
+                    { label: '最適 (0.16)', eta: 0.16, desc: '滑らかに最速収束' },
+                    { label: '減衰振動 (0.28)', eta: 0.28, desc: '左右にオーバーシュート' },
+                    { label: '臨界限界 (0.333)', eta: 0.3333, desc: '永遠に振動して非収束' },
+                    { label: '過大・発散 (0.38)', eta: 0.38, desc: '指数関数的に爆発発散！' },
+                ]
+            },
+            quad_std: {
+                id: 'quad_std',
+                dim: 1,
+                name: '1変数標準二次関数：基本降下挙動',
+                sub: 'f(x) = (x - 3)² + 2 （最小解 x* = 3, η_crit = 1.0）',
+                desc: '二次導関数 f\'\'(x) = 2 のため、η < 1.0 であれば必ず最小値 2 に収束します。',
+                formula: 'f(x) = (x - 3)^2 + 2',
+                dfFormula: "f'(x) = 2(x - 3)",
+                optX: 3.0,
+                optVal: 2.0,
+                f: (x) => Math.pow(x - 3.0, 2) + 2.0,
+                df: (x) => 2.0 * (x - 3.0),
+                d2f: 2.0,
+                critEta: 1.0,
+                defaultX0: -2.0,
+                defaultEta: 0.15,
+                xRange: [-3.5, 7.5],
+                yRange: [0, 32],
+                etaPresets: [
+                    { label: '過小 (0.05)', eta: 0.05, desc: '前進がゆっくり' },
+                    { label: '最適 (0.35)', eta: 0.35, desc: '数ステップで到達' },
+                    { label: '減衰振動 (0.80)', eta: 0.80, desc: '解をオーバーシュート' },
+                    { label: '過大・発散 (1.10)', eta: 1.10, desc: '解を超えて発散' },
+                ]
+            },
+            multimodal: {
+                id: 'multimodal',
+                dim: 1,
+                name: '1変数多峰性関数：局所解の罠',
+                sub: 'f(x) = 0.5x⁴ - 2x² + 0.3x + 3 （大域解と局所解）',
+                desc: '複数の谷を持つ関数。初期値や学習率によって、浅い局所解に捕まるか、深い大域解に到達できるかが変化します。',
+                formula: 'f(x) = 0.5x^4 - 2x^2 + 0.3x + 3',
+                dfFormula: "f'(x) = 2x^3 - 4x + 0.3",
+                optX: 1.34,
+                optVal: 1.14,
+                f: (x) => 0.5 * Math.pow(x, 4) - 2.0 * Math.pow(x, 2) + 0.3 * x + 3.0,
+                df: (x) => 2.0 * Math.pow(x, 3) - 4.0 * x + 0.3,
+                d2f: null,
+                critEta: 0.45,
+                defaultX0: -1.8,
+                defaultEta: 0.08,
+                xRange: [-2.6, 2.6],
+                yRange: [-0.5, 7.5],
+                etaPresets: [
+                    { label: '慎重 (0.04)', eta: 0.04, desc: '現在の谷に確実に落ちる' },
+                    { label: '標準 (0.10)', eta: 0.10, desc: '安定した降下' },
+                    { label: '大きめ (0.22)', eta: 0.22, desc: '山を飛び越える' },
+                    { label: '過大 (0.35)', eta: 0.35, desc: '谷から飛び出して発散' },
+                ]
+            },
+            ellipse_2d: {
+                id: 'ellipse_2d',
+                dim: 2,
+                name: '2変数楕円曲面（3D）：ボウル型探索',
+                sub: 'f(x, y) = 0.5x² + 2.0y² （η_crit = 2/4 = 0.5）',
+                desc: 'y軸の曲率が4倍高いボウル曲面。マウスドラッグで3D曲面を自由回転して観察できます。',
+                formula: 'f(x, y) = 0.5x^2 + 2.0y^2',
+                dfFormula: '∇f = [x, 4y]',
+                optX: [0, 0],
+                optVal: 0,
+                f2d: (x, y) => 0.5 * x * x + 2.0 * y * y,
+                grad2d: (x, y) => [1.0 * x, 4.0 * y],
+                critEta: 0.5,
+                defaultPos: [4.0, 3.0],
+                defaultEta: 0.25,
+                xRange: [-5.0, 5.0],
+                yRange: [-4.0, 4.0],
+                zMaxView: 45.0,
+                etaPresets: [
+                    { label: '小さすぎ (0.03)', eta: 0.03, desc: '極めて遅い' },
+                    { label: '安全 (0.12)', eta: 0.12, desc: '滑らかな収束' },
+                    { label: '最適 (0.25)', eta: 0.25, desc: '最速到達' },
+                    { label: '減衰振動 (0.45)', eta: 0.45, desc: 'y軸で激しく振動' },
+                    { label: '発散 (0.52)', eta: 0.52, desc: '0.5を超えて爆発' },
+                ]
+            },
+            ravine_2d: {
+                id: 'ravine_2d',
+                dim: 2,
+                name: '2変数細長い谷（3D）：峡谷ジグザグ vs モメンタム',
+                sub: 'f(x, y) = 0.05x² + 2.0y² （条件数 κ = 40 の悪条件峡谷）',
+                desc: '急峻な両壁を激しくバウンドして谷底を進めないジグザグ現象。モメンタム項（慣性 β=0.85）を有効にすると一気に谷底を直進します！',
+                formula: 'f(x, y) = 0.05x^2 + 2.0y^2',
+                dfFormula: '∇f = [0.1x, 4y]',
+                optX: [0, 0],
+                optVal: 0,
+                f2d: (x, y) => 0.05 * x * x + 2.0 * y * y,
+                grad2d: (x, y) => [0.1 * x, 4.0 * y],
+                critEta: 0.50,
+                defaultPos: [-8.0, 2.0],
+                defaultEta: 0.42,
+                xRange: [-10.5, 3.5],
+                yRange: [-2.8, 2.8],
+                zMaxView: 22.0,
+                etaPresets: [
+                    { label: '微小歩幅 (0.08)', eta: 0.08, desc: '振動しないが前進不能' },
+                    { label: '激しいジグザグ (0.42)', eta: 0.42, desc: '壁面バウンド停滞' },
+                    { label: '限界超え発散 (0.52)', eta: 0.52, desc: '壁面から飛び出して発散' },
+                ]
+            },
+            rosenbrock: {
+                id: 'rosenbrock',
+                dim: 2,
+                name: '2変数ローゼンブロック関数（3D）：曲がったバナナ谷',
+                sub: 'f(x, y) = (1 - x)² + 10(y - x²)² （最適解 (1, 1)）',
+                desc: '数学的に完全滑らかなC^∞級曲面。放物線状に湾曲した細い谷底を這うように追従する必要があり、適切な学習率と慣性が試されます。',
+                formula: 'f(x, y) = (1-x)^2 + 10(y-x^2)^2',
+                dfFormula: '∇f = [-2(1-x)-40x(y-x^2), 20(y-x^2)]',
+                optX: [1.0, 1.0],
+                optVal: 0,
+                f2d: (x, y) => Math.pow(1.0 - x, 2) + 10.0 * Math.pow(y - x * x, 2),
+                grad2d: (x, y) => [
+                    -2.0 * (1.0 - x) - 40.0 * x * (y - x * x),
+                    20.0 * (y - x * x)
+                ],
+                critEta: 0.05,
+                defaultPos: [-1.2, 1.0],
+                defaultEta: 0.015,
+                xRange: [-1.6, 1.6],
+                yRange: [-0.3, 1.9],
+                zMaxView: 90.0,
+                etaPresets: [
+                    { label: '極小 (0.005)', eta: 0.005, desc: '谷底で停滞' },
+                    { label: '適正 (0.018)', eta: 0.018, desc: '谷に沿って前進' },
+                    { label: '振動 (0.035)', eta: 0.035, desc: '谷壁で振動' },
+                    { label: '発散 (0.060)', eta: 0.060, desc: '急斜面で発散' },
+                ]
+            }
+        };
+
+        // 3D WebGL Canvas コンポーネント (Three.js)
+        const ThreeSurfaceViewer = ({ preset, history, pos2d, status, useMomentum, wireframe }) => {
+            const mountRef = useRef(null);
+            const sceneRef = useRef(null);
+            const cameraRef = useRef(null);
+            const rendererRef = useRef(null);
+            const controlsRef = useRef(null);
+            const surfaceMeshRef = useRef(null);
+            const ballMeshRef = useRef(null);
+            const pathLineRef = useRef(null);
+            const minStarRef = useRef(null);
+
+            // 座標変換スケール
+            const [xMin, xMax] = preset.xRange;
+            const [yMin, yMax] = preset.yRange;
+            const xSpan = xMax - xMin;
+            const ySpan = yMax - yMin;
+            const maxSpan = Math.max(xSpan, ySpan);
+            const heightScale = 4.5 / (preset.zMaxView || 25.0);
+
+            // Three.js 座標変換: (x, y) -> (ThreeX, ThreeY, ThreeZ)
+            // Three.js では Y 軸を垂直方向（高さ）とする
+            const toThreePos = (x, y, zVal) => {
+                const z = zVal !== undefined ? zVal : preset.f2d(x, y);
+                const tx = ((x - (xMin + xMax) / 2) / maxSpan) * 10;
+                const tz = ((y - (yMin + yMax) / 2) / maxSpan) * 10;
+                // 発散時の極端なオーバーフローのみソフトに保護（通常サーフェス内では一切カットされない）
+                const safeZ = Math.min((preset.zMaxView || 25.0) * 1.3, Math.max(0, z));
+                const ty = (safeZ * heightScale) - 2.0;
+                return new THREE.Vector3(tx, ty, tz);
+            };
+
+            // 1. シーン・カメラ・レンダラーの初期化
+            useEffect(() => {
+                const container = mountRef.current;
+                if (!container) return;
+
+                const width = container.clientWidth;
+                const height = container.clientHeight || 420;
+
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x020617); // Slate 950
+                sceneRef.current = scene;
+
+                const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+                camera.position.set(10, 9, 13);
+                cameraRef.current = camera;
+
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(width, height);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                renderer.shadowMap.enabled = true;
+                rendererRef.current = renderer;
+                container.innerHTML = '';
+                container.appendChild(renderer.domElement);
+
+                // オービットコントロール（マウスドラッグで自由回転）
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.06;
+                controls.target.set(0, 0, 0);
+                controlsRef.current = controls;
+
+                // ライティング
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+                scene.add(ambientLight);
+
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+                dirLight.position.set(12, 18, 10);
+                dirLight.castShadow = true;
+                scene.add(dirLight);
+
+                const pointLight = new THREE.PointLight(0x38bdf8, 1.2, 30);
+                pointLight.position.set(-8, 10, -8);
+                scene.add(pointLight);
+
+                // アニメーションループ
+                let animId;
+                const animate = () => {
+                    animId = requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                };
+                animate();
+
+                // リサイズ対応
+                const handleResize = () => {
+                    if (!container) return;
+                    const w = container.clientWidth;
+                    const h = container.clientHeight || 420;
+                    camera.aspect = w / h;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(w, h);
+                };
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    cancelAnimationFrame(animId);
+                    window.removeEventListener('resize', handleResize);
+                    renderer.dispose();
+                    if (container && renderer.domElement) {
+                        container.removeChild(renderer.domElement);
+                    }
+                };
+            }, []);
+
+            // 2. プリセット変更時に 3D サーフェスメッシュを再生成
+            useEffect(() => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+
+                if (surfaceMeshRef.current) {
+                    scene.remove(surfaceMeshRef.current);
+                    surfaceMeshRef.current.geometry.dispose();
+                }
+                if (minStarRef.current) {
+                    scene.remove(minStarRef.current);
+                }
+
+                // 3D サーフェスグリッドの構築（高密度 120x120 メッシュによる完全滑らか表示）
+                const nx = 120;
+                const ny = 120;
+                const geom = new THREE.BufferGeometry();
+                const positions = [];
+                const colors = [];
+                const indices = [];
+
+                const maxZ = preset.zMaxView || 25.0;
+
+                for (let j = 0; j <= ny; j++) {
+                    const y = yMin + (j / ny) * (yMax - yMin);
+                    for (let i = 0; i <= nx; i++) {
+                        const x = xMin + (i / nx) * (xMax - xMin);
+                        const z = preset.f2d(x, y);
+                        const vPos = toThreePos(x, y, z);
+                        positions.push(vPos.x, vPos.y, vPos.z);
+
+                        // カラーマップ（高度に応じた滑らかなグラデーション：深い青 -> シアン -> マゼンタ -> アンバー）
+                        const t = Math.min(1.0, Math.max(0.0, z / maxZ));
+                        const color = new THREE.Color();
+                        const hue = (220 - t * 210) / 360; // 220(青) -> 10(赤)
+                        color.setHSL(hue, 0.85, 0.45 + t * 0.15);
+                        colors.push(color.r, color.g, color.b);
+                    }
+                }
+
+                for (let j = 0; j < ny; j++) {
+                    for (let i = 0; i < nx; i++) {
+                        const a = j * (nx + 1) + i;
+                        const b = j * (nx + 1) + (i + 1);
+                        const c = (j + 1) * (nx + 1) + i;
+                        const d = (j + 1) * (nx + 1) + (i + 1);
+                        // 市松模様交互対角線による異方性筋（リプル）の完全排除
+                        if ((i + j) % 2 === 0) {
+                            indices.push(a, c, b);
+                            indices.push(b, c, d);
+                        } else {
+                            indices.push(a, c, d);
+                            indices.push(a, d, b);
+                        }
+                    }
+                }
+
+                geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                geom.setIndex(indices);
+                geom.computeVertexNormals();
+
+                const mat = new THREE.MeshStandardMaterial({
+                    vertexColors: true,
+                    side: THREE.DoubleSide,
+                    roughness: 0.3,
+                    metalness: 0.1,
+                    wireframe: wireframe
+                });
+
+                const surfaceMesh = new THREE.Mesh(geom, mat);
+                scene.add(surfaceMesh);
+                surfaceMeshRef.current = surfaceMesh;
+
+                // 最小値マーク (グリーン球)
+                const optPos = toThreePos(preset.optX[0], preset.optX[1], preset.optVal);
+                const starGeom = new THREE.SphereGeometry(0.2, 16, 16);
+                const starMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+                const starMesh = new THREE.Mesh(starGeom, starMat);
+                starMesh.position.copy(optPos);
+                scene.add(starMesh);
+                minStarRef.current = starMesh;
+
+            }, [preset, wireframe]);
+
+            // 3. 現在位置ボールと軌跡のリアルタイム更新
+            useEffect(() => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+
+                // 現在位置の探索ボール
+                if (!ballMeshRef.current) {
+                    const bGeom = new THREE.SphereGeometry(0.24, 24, 24);
+                    const bMat = new THREE.MeshStandardMaterial({
+                        color: 0xffffff,
+                        emissive: 0xef4444,
+                        emissiveIntensity: 0.8,
+                        roughness: 0.2
+                    });
+                    const ball = new THREE.Mesh(bGeom, bMat);
+                    scene.add(ball);
+                    ballMeshRef.current = ball;
+                }
+
+                if (status === 'diverged') {
+                    ballMeshRef.current.visible = false;
+                } else {
+                    ballMeshRef.current.visible = true;
+                    const curPos = toThreePos(pos2d[0], pos2d[1]);
+                    ballMeshRef.current.position.copy(curPos);
+                    // モメンタム時はシアン、通常時はローズに発光
+                    ballMeshRef.current.material.emissive.setHex(useMomentum ? 0x0284c7 : 0xe11d48);
+                }
+
+                // 探索軌跡ライン
+                if (pathLineRef.current) {
+                    scene.remove(pathLineRef.current);
+                    pathLineRef.current.geometry.dispose();
+                }
+
+                if (history.length > 1) {
+                    const linePts = history.map(h => {
+                        const p = toThreePos(h.x, h.y, h.fx);
+                        // サーフェスに埋まらないよう少しだけ浮かせる
+                        return p.clone().add(new THREE.Vector3(0, 0.08, 0));
+                    });
+                    const lineGeom = new THREE.BufferGeometry().setFromPoints(linePts);
+                    const lineMat = new THREE.LineBasicMaterial({
+                        color: useMomentum ? 0x38bdf8 : 0xf43f5e,
+                        linewidth: 3
+                    });
+                    const pathLine = new THREE.Line(lineGeom, lineMat);
+                    scene.add(pathLine);
+                    pathLineRef.current = pathLine;
+                }
+
+            }, [pos2d, history, status, useMomentum]);
+
+            // 視点リセット
+            const resetView = () => {
+                if (cameraRef.current && controlsRef.current) {
+                    cameraRef.current.position.set(10, 9, 13);
+                    controlsRef.current.target.set(0, 0, 0);
+                    controlsRef.current.update();
+                }
+            };
+
+            return (
+                <div class="relative w-full h-[420px] rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
+                    <div ref={mountRef} class="w-full h-full cursor-grab active:cursor-grabbing" />
+                    <div class="absolute top-2 left-2 text-[11px] bg-slate-900/80 backdrop-blur px-2.5 py-1 rounded border border-slate-700 text-slate-300 pointer-events-none flex items-center gap-1.5 shadow">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        <span>🖱️ マウスドラッグで360度自由回転 / ホイールでズーム</span>
+                    </div>
+                    <button
+                        onClick={resetView}
+                        class="absolute bottom-2 right-2 text-xs bg-slate-800/80 hover:bg-slate-700 text-slate-200 px-2.5 py-1 rounded border border-slate-700 backdrop-blur transition shadow"
+                    >
+                        🎥 視点リセット
+                    </button>
+                </div>
+            );
+        };
+
+        // メインアプリケーション
+        const App = () => {
+            const [selectedPresetKey, setSelectedPresetKey] = useState('quad_crit');
+            const preset = PRESETS[selectedPresetKey];
+
+            // 2変数の場合の表示モード (3Dサーフェス vs 2D等高線)
+            const [viewMode2d, setViewMode2d] = useState('3d');
+            const [wireframe3d, setWireframe3d] = useState(false);
+
+            // ハイパーパラメータ
+            const [eta, setEta] = useState(preset.defaultEta);
+            const [useMomentum, setUseMomentum] = useState(false);
+            const [momentumBeta, setMomentumBeta] = useState(0.85);
+
+            // シミュレーション状態
+            const [step, setStep] = useState(0);
+            const [pos1d, setPos1d] = useState(preset.defaultX0);
+            const [pos2d, setPos2d] = useState(preset.defaultPos || [0, 0]);
+            const [velocity1d, setVelocity1d] = useState(0);
+            const [velocity2d, setVelocity2d] = useState([0, 0]);
+            const [history, setHistory] = useState([]);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [playSpeed, setPlaySpeed] = useState(350); // ms
+            const [status, setStatus] = useState('ready');
+
+            const canvasRef = useRef(null);
+
+            // プリセット変更時
+            useEffect(() => {
+                setEta(preset.defaultEta);
+                setUseMomentum(preset.id === 'ravine_2d');
+                resetSimulation(preset.defaultX0, preset.defaultPos, preset.defaultEta);
+            }, [selectedPresetKey]);
+
+            // シミュレーションリセット
+            const resetSimulation = (initX0 = preset.defaultX0, initPos = preset.defaultPos, curEta = eta) => {
+                setIsPlaying(false);
+                setStep(0);
+                setVelocity1d(0);
+                setVelocity2d([0, 0]);
+
+                if (preset.dim === 1) {
+                    const x0 = initX0 ?? preset.defaultX0;
+                    setPos1d(x0);
+                    const fx = preset.f(x0);
+                    const dfx = preset.df(x0);
+                    setHistory([{ step: 0, x: x0, fx: fx, dfx: dfx, dist: Math.abs(x0 - preset.optX) }]);
+                } else {
+                    const p0 = initPos ? [...initPos] : [...preset.defaultPos];
+                    setPos2d(p0);
+                    const fval = preset.f2d(p0[0], p0[1]);
+                    const g = preset.grad2d(p0[0], p0[1]);
+                    const dist = Math.hypot(p0[0] - preset.optX[0], p0[1] - preset.optX[1]);
+                    setHistory([{ step: 0, x: p0[0], y: p0[1], fx: fval, gradNorm: Math.hypot(g[0], g[1]), dist: dist }]);
+                }
+                setStatus('ready');
+            };
+
+            // 1ステップ実行
+            const handleStep = () => {
+                if (status === 'diverged' || status === 'converged') return;
+
+                if (preset.dim === 1) {
+                    const curX = pos1d;
+                    const grad = preset.df(curX);
+
+                    let newV = 0;
+                    let nextX = 0;
+                    if (useMomentum) {
+                        newV = momentumBeta * velocity1d + eta * grad;
+                        nextX = curX - newV;
+                        setVelocity1d(newV);
+                    } else {
+                        nextX = curX - eta * grad;
+                    }
+
+                    if (isNaN(nextX) || Math.abs(nextX) > 1e6) {
+                        setStatus('diverged');
+                        setIsPlaying(false);
+                        return;
+                    }
+
+                    const nextFx = preset.f(nextX);
+                    const nextDf = preset.df(nextX);
+                    const dist = Math.abs(nextX - preset.optX);
+                    const newStep = step + 1;
+
+                    setPos1d(nextX);
+                    setStep(newStep);
+                    setHistory(prev => [...prev.slice(-80), { step: newStep, x: nextX, fx: nextFx, dfx: nextDf, dist: dist }]);
+
+                    if (dist < 1e-4 && Math.abs(nextDf) < 1e-4) {
+                        setStatus('converged');
+                        setIsPlaying(false);
+                    } else if (newStep > 5 && Math.abs(nextX - curX) > 2.0 * Math.abs(curX)) {
+                        setStatus('oscillating');
+                    } else {
+                        setStatus('running');
+                    }
+                } else {
+                    // 2次元
+                    const [curX, curY] = pos2d;
+                    const [gx, gy] = preset.grad2d(curX, curY);
+
+                    let nextX, nextY;
+                    let [vx, vy] = velocity2d;
+                    if (useMomentum) {
+                        vx = momentumBeta * vx + eta * gx;
+                        vy = momentumBeta * vy + eta * gy;
+                        nextX = curX - vx;
+                        nextY = curY - vy;
+                        setVelocity2d([vx, vy]);
+                    } else {
+                        nextX = curX - eta * gx;
+                        nextY = curY - eta * gy;
+                    }
+
+                    if (isNaN(nextX) || isNaN(nextY) || Math.abs(nextX) > 1e5 || Math.abs(nextY) > 1e5) {
+                        setStatus('diverged');
+                        setIsPlaying(false);
+                        return;
+                    }
+
+                    const nextF = preset.f2d(nextX, nextY);
+                    const [nextGx, nextGy] = preset.grad2d(nextX, nextY);
+                    const gNorm = Math.hypot(nextGx, nextGy);
+                    const dist = Math.hypot(nextX - preset.optX[0], nextY - preset.optX[1]);
+                    const newStep = step + 1;
+
+                    setPos2d([nextX, nextY]);
+                    setStep(newStep);
+                    setHistory(prev => [...prev.slice(-80), { step: newStep, x: nextX, y: nextY, fx: nextF, gradNorm: gNorm, dist: dist }]);
+
+                    if (dist < 0.05 && gNorm < 0.05) {
+                        setStatus('converged');
+                        setIsPlaying(false);
+                    } else {
+                        setStatus('running');
+                    }
+                }
+            };
+
+            // 自動タイマー
+            useEffect(() => {
+                let timer = null;
+                if (isPlaying) {
+                    timer = setInterval(() => {
+                        handleStep();
+                    }, playSpeed);
+                }
+                return () => clearInterval(timer);
+            }, [isPlaying, step, pos1d, pos2d, velocity1d, velocity2d, eta, useMomentum, status, playSpeed]);
+
+            const handleEtaChange = (newEta) => {
+                setEta(newEta);
+                resetSimulation(pos1d, pos2d, newEta);
+            };
+
+            // 1D Canvas クリックで初期位置変更
+            const handleCanvasClick = (e) => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const clickPx = (e.clientX - rect.left) * scaleX;
+
+                const [xMin, xMax] = preset.xRange;
+                const worldX = xMin + (clickPx / canvas.width) * (xMax - xMin);
+
+                if (preset.dim === 1) {
+                    const clampedX = Math.max(xMin + 0.2, Math.min(xMax - 0.2, worldX));
+                    setPos1d(clampedX);
+                    resetSimulation(clampedX, null, eta);
+                } else {
+                    const scaleY = canvas.height / rect.height;
+                    const clickPy = (e.clientY - rect.top) * scaleY;
+                    const [yMin, yMax] = preset.yRange;
+                    const worldY = yMax - (clickPy / canvas.height) * (yMax - yMin);
+                    const clampedX = Math.max(xMin + 0.2, Math.min(xMax - 0.2, worldX));
+                    const clampedY = Math.max(yMin + 0.2, Math.min(yMax - 0.2, worldY));
+                    setPos2d([clampedX, clampedY]);
+                    resetSimulation(null, [clampedX, clampedY], eta);
+                }
+            };
+
+            // 1D または 2D等高線 Canvas 描画
+            useEffect(() => {
+                if (preset.dim === 2 && viewMode2d === '3d') return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const W = canvas.width;
+                const H = canvas.height;
+                ctx.clearRect(0, 0, W, H);
+
+                const [xMin, xMax] = preset.xRange;
+                const [yMin, yMax] = preset.yRange;
+
+                const toPxX = (x) => ((x - xMin) / (xMax - xMin)) * W;
+                const toPxY = (y) => H - ((y - yMin) / (yMax - yMin)) * H;
+
+                // グリッドと軸
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 1;
+                const xGridStep = (xMax - xMin) > 8 ? 2 : 1;
+                for (let x = Math.ceil(xMin); x <= xMax; x += xGridStep) {
+                    ctx.beginPath();
+                    ctx.moveTo(toPxX(x), 0);
+                    ctx.lineTo(toPxX(x), H);
+                    ctx.stroke();
+                }
+
+                ctx.strokeStyle = '#475569';
+                ctx.lineWidth = 1.5;
+                if (yMin <= 0 && yMax >= 0) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, toPxY(0));
+                    ctx.lineTo(W, toPxY(0));
+                    ctx.stroke();
+                }
+                if (xMin <= 0 && xMax >= 0) {
+                    ctx.beginPath();
+                    ctx.moveTo(toPxX(0), 0);
+                    ctx.lineTo(toPxX(0), H);
+                    ctx.stroke();
+                }
+
+                ctx.fillStyle = '#64748b';
+                ctx.font = '11px sans-serif';
+                for (let x = Math.ceil(xMin); x <= xMax; x += xGridStep) {
+                    if (Math.abs(x) < 0.1) continue;
+                    ctx.fillText(x.toString(), toPxX(x) - 6, Math.min(H - 6, Math.max(14, toPxY(0) + 14)));
+                }
+
+                if (preset.dim === 1) {
+                    // 関数 f(x)
+                    ctx.beginPath();
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 3;
+                    let started = false;
+                    for (let px = 0; px <= W; px += 2) {
+                        const x = xMin + (px / W) * (xMax - xMin);
+                        const y = preset.f(x);
+                        if (y >= yMin - 100 && y <= yMax + 100) {
+                            const py = toPxY(y);
+                            if (!started) { ctx.moveTo(px, py); started = true; }
+                            else { ctx.lineTo(px, py); }
+                        } else {
+                            started = false;
+                        }
+                    }
+                    ctx.stroke();
+
+                    // 最適解スター
+                    const starX = toPxX(preset.optX);
+                    const starY = toPxY(preset.optVal);
+                    ctx.fillStyle = '#10b981';
+                    ctx.beginPath();
+                    ctx.arc(starX, starY, 6, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 軌跡
+                    if (history.length > 1) {
+                        ctx.strokeStyle = 'rgba(251, 146, 60, 0.45)';
+                        ctx.lineWidth = 1.5;
+                        ctx.setLineDash([3, 3]);
+                        ctx.beginPath();
+                        ctx.moveTo(toPxX(history[0].x), toPxY(history[0].fx));
+                        for (let i = 1; i < history.length; i++) {
+                            ctx.lineTo(toPxX(history[i].x), toPxY(history[i].fx));
+                        }
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+
+                        history.forEach((h, idx) => {
+                            ctx.fillStyle = idx === history.length - 1 ? '#f97316' : 'rgba(251, 146, 60, 0.6)';
+                            ctx.beginPath();
+                            ctx.arc(toPxX(h.x), toPxY(h.fx), idx === history.length - 1 ? 5 : 3, 0, Math.PI * 2);
+                            ctx.fill();
+                        });
+                    }
+
+                    // 現在点 & 矢印
+                    if (status !== 'diverged') {
+                        const curX = pos1d;
+                        const curY = preset.f(curX);
+                        const curGrad = preset.df(curX);
+                        const px = toPxX(curX);
+                        const py = toPxY(curY);
+
+                        ctx.shadowColor = '#38bdf8';
+                        ctx.shadowBlur = 12;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath();
+                        ctx.arc(px, py, 6, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.shadowBlur = 0;
+
+                        const nextX = curX - eta * curGrad;
+                        const nextPx = toPxX(nextX);
+
+                        ctx.strokeStyle = '#ef4444';
+                        ctx.lineWidth = 2.5;
+                        ctx.beginPath();
+                        ctx.moveTo(px, py);
+                        ctx.lineTo(nextPx, py);
+                        ctx.stroke();
+
+                        const arrowSize = 6;
+                        const dir = nextPx > px ? 1 : -1;
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.moveTo(nextPx, py);
+                        ctx.lineTo(nextPx - dir * arrowSize, py - arrowSize);
+                        ctx.lineTo(nextPx - dir * arrowSize, py + arrowSize);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                } else if (viewMode2d === '2d') {
+                    // 2D等高線モード
+                    const numLevels = 18;
+                    const maxLevel = preset.zMaxView || 20;
+                    ctx.lineWidth = 1.2;
+
+                    for (let lvl = 1; lvl <= numLevels; lvl++) {
+                        const levelVal = Math.pow(lvl / numLevels, 2) * maxLevel;
+                        ctx.strokeStyle = `hsl(${220 - lvl * 8}, 70%, 40%)`;
+                        ctx.beginPath();
+
+                        if (preset.id === 'ravine_2d' || preset.id === 'ellipse_2d') {
+                            const aCoeff = preset.id === 'ravine_2d' ? 0.05 : 0.5;
+                            const bCoeff = 2.0;
+                            const rx = Math.sqrt(levelVal / aCoeff);
+                            const ry = Math.sqrt(levelVal / bCoeff);
+                            if (rx > 0 && ry > 0) {
+                                for (let th = 0; th <= Math.PI * 2; th += 0.05) {
+                                    const cx = rx * Math.cos(th);
+                                    const cy = ry * Math.sin(th);
+                                    const cpx = toPxX(cx);
+                                    const cpy = toPxY(cy);
+                                    if (th === 0) ctx.moveTo(cpx, cpy);
+                                    else ctx.lineTo(cpx, cpy);
+                                }
+                            }
+                        } else if (preset.id === 'rosenbrock') {
+                            const c = levelVal;
+                            const xStart = Math.max(xMin, 1.0 - Math.sqrt(c));
+                            const xEnd = Math.min(xMax, 1.0 + Math.sqrt(c));
+                            const stepsCount = 60;
+                            if (xEnd > xStart) {
+                                for (let s = 0; s <= stepsCount; s++) {
+                                    const cx = xStart + (s / stepsCount) * (xEnd - xStart);
+                                    const rad = Math.max(0, (c - Math.pow(1.0 - cx, 2)) / 10.0);
+                                    const cy = cx * cx + Math.sqrt(rad);
+                                    const cpx = toPxX(cx);
+                                    const cpy = toPxY(cy);
+                                    if (s === 0) ctx.moveTo(cpx, cpy);
+                                    else ctx.lineTo(cpx, cpy);
+                                }
+                                for (let s = stepsCount; s >= 0; s--) {
+                                    const cx = xStart + (s / stepsCount) * (xEnd - xStart);
+                                    const rad = Math.max(0, (c - Math.pow(1.0 - cx, 2)) / 10.0);
+                                    const cy = cx * cx - Math.sqrt(rad);
+                                    ctx.lineTo(toPxX(cx), toPxY(cy));
+                                }
+                            }
+                        }
+                        ctx.stroke();
+                    }
+
+                    // ローゼンブロックの谷底中心線 (y = x^2) を点線表示
+                    if (preset.id === 'rosenbrock') {
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+                        ctx.setLineDash([3, 3]);
+                        ctx.beginPath();
+                        for (let s = 0; s <= 80; s++) {
+                            const cx = xMin + (s / 80) * (xMax - xMin);
+                            const cy = cx * cx;
+                            const cpx = toPxX(cx);
+                            const cpy = toPxY(cy);
+                            if (s === 0) ctx.moveTo(cpx, cpy);
+                            else ctx.lineTo(cpx, cpy);
+                        }
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+
+                    // 最小解
+                    ctx.fillStyle = '#10b981';
+                    ctx.beginPath();
+                    ctx.arc(toPxX(preset.optX[0]), toPxY(preset.optX[1]), 6, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 軌跡
+                    if (history.length > 1) {
+                        ctx.strokeStyle = useMomentum ? '#38bdf8' : '#f43f5e';
+                        ctx.lineWidth = 2.0;
+                        ctx.beginPath();
+                        ctx.moveTo(toPxX(history[0].x), toPxY(history[0].y));
+                        for (let i = 1; i < history.length; i++) {
+                            ctx.lineTo(toPxX(history[i].x), toPxY(history[i].y));
+                        }
+                        ctx.stroke();
+
+                        history.forEach((h, idx) => {
+                            ctx.fillStyle = idx === history.length - 1 ? '#ffffff' : (useMomentum ? '#0284c7' : '#e11d48');
+                            ctx.beginPath();
+                            ctx.arc(toPxX(h.x), toPxY(h.y), idx === history.length - 1 ? 5 : 3, 0, Math.PI * 2);
+                            ctx.fill();
+                        });
+                    }
+
+                    if (status !== 'diverged') {
+                        const [curX, curY] = pos2d;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath();
+                        ctx.arc(toPxX(curX), toPxY(curY), 6, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+
+                if (status === 'diverged') {
+                    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+                    ctx.fillRect(0, 0, W, H);
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 22px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('💥 解が爆発的に発散しました！(Overflow)', W / 2, H / 2 - 15);
+                    ctx.fillStyle = '#cbd5e1';
+                    ctx.font = '14px sans-serif';
+                    ctx.fillText('学習率 η が臨界安定限界を超過したため、解が彼方へ吹き飛びました。', W / 2, H / 2 + 18);
+                    ctx.fillText('「🔄 リセット」または学習率を下げて再実行してください。', W / 2, H / 2 + 42);
+                    ctx.textAlign = 'start';
+                }
+
+            }, [pos1d, pos2d, history, status, preset, eta, useMomentum, viewMode2d]);
+
+            // 理論的安定性
+            const stabilityAnalysis = useMemo(() => {
+                if (!preset.critEta) return null;
+                let stateText = '';
+                let badgeColor = '';
+                let desc = '';
+
+                if (eta < preset.critEta * 0.4) {
+                    stateText = '過小（歩幅が小さすぎ）';
+                    badgeColor = 'bg-blue-900/60 text-blue-300 border-blue-700';
+                    desc = '振動せず単調に降下しますが、谷底まで莫大なステップ数が必要です。';
+                } else if (eta < preset.critEta * 0.85) {
+                    stateText = '最適・良好収束';
+                    badgeColor = 'bg-emerald-900/60 text-emerald-300 border-emerald-700';
+                    desc = '無駄なくスムーズに最小値へ急速接近します。';
+                } else if (eta < preset.critEta) {
+                    stateText = '減衰振動（オーバーシュート）';
+                    badgeColor = 'bg-amber-900/60 text-amber-300 border-amber-700';
+                    desc = '解を飛び越えて左右にバウンドしながら、徐々に振幅を縮めて収束します。';
+                } else if (Math.abs(eta - preset.critEta) < 0.005) {
+                    stateText = '臨界限界（持続振動）';
+                    badgeColor = 'bg-purple-900/60 text-purple-300 border-purple-700';
+                    desc = '解の左右を同じ振幅で永久に往復し、収束しません（|R| = 1）。';
+                } else {
+                    stateText = '臨界超過（爆発・発散！）';
+                    badgeColor = 'bg-rose-900/60 text-rose-300 border-rose-700';
+                    desc = '放物線・谷の外側へと跳ね飛ばされ、指数関数的に誤差が爆発します（|R| > 1）。';
+                }
+
+                const contractionR = preset.d2f ? 1.0 - eta * preset.d2f : null;
+
+                return { stateText, badgeColor, desc, contractionR };
+            }, [eta, preset]);
+
+            return (
+                <div class="max-w-7xl mx-auto space-y-4">
+                    {/* ヘッダー */}
+                    <header class="flex flex-col md:flex-row md:items-center justify-between pb-3 border-b border-slate-800 gap-2">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h1 class="text-xl md:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                                    <span class="text-sky-400">⛰️</span> 最急降下法：学習率インタラクティブ実験
+                                </h1>
+                            </div>
+                            <p class="text-xs md:text-sm text-slate-400 mt-1">
+                                勾配降下法における <code class="text-sky-300 font-mono">η (学習率)</code> の重要性と、過大発散・3D峡谷ジグザグ現象を視覚的に探求する
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2 text-xs font-mono bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
+                            <span class="text-slate-400">更新式:</span>
+                            <span class="text-amber-400">x_{'{k+1}'} = x_k - η ∇f(x_k)</span>
+                        </div>
+                    </header>
+
+                    {/* プリセット選択タブ */}
+                    <div class="grid grid-cols-2 md:grid-cols-6 gap-2">
+                        {Object.values(PRESETS).map(p => (
+                            <button
+                                key={p.id}
+                                onClick={() => setSelectedPresetKey(p.id)}
+                                class={`text-left p-2.5 rounded-lg border transition text-xs relative ${
+                                    selectedPresetKey === p.id
+                                        ? 'bg-blue-950/80 border-blue-500 text-white shadow-lg shadow-blue-950/50'
+                                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                                }`}
+                            >
+                                {p.dim === 2 && (
+                                    <span class="absolute top-1 right-1 px-1 py-0.2 text-[9px] font-bold bg-indigo-600 text-white rounded">
+                                        3D
+                                    </span>
+                                )}
+                                <div class="font-bold truncate pr-4">{p.name.split('：')[0]}</div>
+                                <div class="text-[10px] text-slate-500 truncate mt-0.5">{p.name.split('：')[1]}</div>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* メインエリア */}
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        {/* 左側：3D または 2D Canvas 可視化 & 損失推移 */}
+                        <div class="lg:col-span-8 space-y-3">
+                            <div class="bg-slate-900/90 rounded-xl border border-slate-800 p-3 shadow-xl relative">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="text-xs text-slate-300 flex items-center gap-2">
+                                        <span class="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse"></span>
+                                        <span class="font-semibold">{preset.sub}</span>
+                                    </div>
+                                    {preset.dim === 2 ? (
+                                        <div class="flex items-center gap-1.5 text-xs">
+                                            <button
+                                                onClick={() => setViewMode2d('3d')}
+                                                class={`px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                                                    viewMode2d === '3d'
+                                                        ? 'bg-sky-600 border-sky-400 text-white'
+                                                        : 'bg-slate-800 border-slate-700 text-slate-400'
+                                                }`}
+                                            >
+                                                🧊 3D曲面
+                                            </button>
+                                            <button
+                                                onClick={() => setViewMode2d('2d')}
+                                                class={`px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                                                    viewMode2d === '2d'
+                                                        ? 'bg-sky-600 border-sky-400 text-white'
+                                                        : 'bg-slate-800 border-slate-700 text-slate-400'
+                                                }`}
+                                            >
+                                                🗺️ 2D等高線
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <span class="text-[11px] text-slate-500">※ Canvas上をクリックして初期点 x₀ を変更可能</span>
+                                    )}
+                                </div>
+
+                                {/* 描画領域：2変数3Dモードなら Three.js、それ以外なら 2D Canvas */}
+                                {preset.dim === 2 && viewMode2d === '3d' ? (
+                                    <ThreeSurfaceViewer
+                                        preset={preset}
+                                        history={history}
+                                        pos2d={pos2d}
+                                        status={status}
+                                        useMomentum={useMomentum}
+                                        wireframe={wireframe3d}
+                                    />
+                                ) : (
+                                    <canvas
+                                        ref={canvasRef}
+                                        width={720}
+                                        height={420}
+                                        onClick={handleCanvasClick}
+                                        class="w-full bg-slate-950 rounded-lg border border-slate-800 shadow-inner"
+                                    />
+                                )}
+
+                                {/* 再生コントロール */}
+                                <div class="flex flex-wrap items-center justify-between gap-2 mt-3 pt-2 border-t border-slate-800/80">
+                                    <div class="flex items-center gap-2">
+                                        <button
+                                            onClick={() => setIsPlaying(!isPlaying)}
+                                            class={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                                isPlaying
+                                                    ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                                                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                            }`}
+                                        >
+                                            {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                                            {isPlaying ? '一時停止' : '自動実行'}
+                                        </button>
+                                        <button
+                                            onClick={handleStep}
+                                            disabled={isPlaying || status === 'diverged' || status === 'converged'}
+                                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 border border-slate-700"
+                                        >
+                                            <StepIcon /> 1ステップ
+                                        </button>
+                                        <button
+                                            onClick={() => resetSimulation()}
+                                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                                        >
+                                            <ResetIcon /> リセット
+                                        </button>
+                                    </div>
+
+                                    {/* 速度調整 & 3Dワイヤーフレーム切替 */}
+                                    <div class="flex items-center gap-3 text-xs text-slate-400">
+                                        {preset.dim === 2 && viewMode2d === '3d' && (
+                                            <label class="flex items-center gap-1 cursor-pointer text-slate-300">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={wireframe3d}
+                                                    onChange={(e) => setWireframe3d(e.target.checked)}
+                                                    class="w-3.5 h-3.5 rounded"
+                                                />
+                                                <span class="text-[11px]">ワイヤーフレーム</span>
+                                            </label>
+                                        )}
+                                        <div class="flex items-center gap-1">
+                                            <span>速度:</span>
+                                            <button onClick={() => setPlaySpeed(650)} class={`px-2 py-0.5 rounded text-[11px] ${playSpeed === 650 ? 'bg-slate-700 text-white font-bold' : 'text-slate-500'}`}>遅</button>
+                                            <button onClick={() => setPlaySpeed(350)} class={`px-2 py-0.5 rounded text-[11px] ${playSpeed === 350 ? 'bg-slate-700 text-white font-bold' : 'text-slate-500'}`}>中</button>
+                                            <button onClick={() => setPlaySpeed(100)} class={`px-2 py-0.5 rounded text-[11px] ${playSpeed === 100 ? 'bg-slate-700 text-white font-bold' : 'text-slate-500'}`}>速</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 目的関数値 f(x) の推移（収束スピード） */}
+                            <div class="bg-slate-900/70 rounded-xl border border-slate-800 p-3">
+                                <div class="flex items-center justify-between text-xs text-slate-300 mb-2 font-semibold">
+                                    <span>目的関数値 f(x_k) の推移（収束スピードの確認）</span>
+                                    <span class="text-[11px] text-slate-500">反復ステップ k: {step}</span>
+                                </div>
+                                <div class="h-20 flex items-end gap-1 bg-slate-950 p-2 rounded-lg border border-slate-800 overflow-x-auto">
+                                    {history.map((h, i) => {
+                                        const loss = Math.max(1e-7, h.fx - (preset.optVal || 0));
+                                        const logVal = Math.log10(loss + 1e-6);
+                                        const hPercent = Math.min(100, Math.max(8, ((logVal + 6) / 8) * 100));
+                                        return (
+                                            <div
+                                                key={i}
+                                                class="flex-1 min-w-[6px] rounded-t transition-all"
+                                                style={{
+                                                    height: `${hPercent}%`,
+                                                    backgroundColor: i === history.length - 1 ? '#38bdf8' : '#334155'
+                                                }}
+                                                title={`Step ${h.step}: f(x) = ${h.fx.toFixed(5)}`}
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 右側：コントロール & 数理分析パネル */}
+                        <div class="lg:col-span-4 space-y-3">
+                            {/* 学習率調整カード */}
+                            <div class="bg-slate-900/90 rounded-xl border border-slate-800 p-4 shadow-xl space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs font-bold text-slate-200">学習率 η (Learning Rate)</span>
+                                    <span class="font-mono text-sm font-bold text-sky-400 bg-sky-950/60 px-2 py-0.5 rounded border border-sky-800">
+                                        η = {eta.toFixed(4)}
+                                    </span>
+                                </div>
+
+                                <input
+                                    type="range"
+                                    min="0.005"
+                                    max={preset.critEta ? Math.max(0.6, preset.critEta * 1.5).toFixed(3) : "0.5"}
+                                    step="0.002"
+                                    value={eta}
+                                    onChange={(e) => handleEtaChange(parseFloat(e.target.value))}
+                                    class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer"
+                                />
+
+                                {/* プリセット学習率ボタン群 */}
+                                <div class="space-y-1.5 pt-1">
+                                    <div class="text-[11px] text-slate-400">代表的な学習率プリセット:</div>
+                                    <div class="grid grid-cols-2 gap-1.5">
+                                        {preset.etaPresets.map((p, i) => (
+                                            <button
+                                                key={i}
+                                                onClick={() => handleEtaChange(p.eta)}
+                                                class={`px-2 py-1.5 rounded text-left border transition text-xs ${
+                                                    Math.abs(eta - p.eta) < 0.002
+                                                        ? 'bg-sky-900/60 border-sky-500 text-sky-200 font-bold'
+                                                        : 'bg-slate-800/60 border-slate-700/80 text-slate-300 hover:bg-slate-700/50'
+                                                }`}
+                                            >
+                                                <div class="truncate font-semibold">{p.label}</div>
+                                                <div class="text-[9px] text-slate-400 truncate">{p.desc}</div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* 峡谷・2Dモード：モメンタムトグル */}
+                                {preset.dim === 2 && (
+                                    <div class="mt-3 pt-3 border-t border-slate-800">
+                                        <label class="flex items-center gap-2 cursor-pointer bg-blue-950/30 p-2.5 rounded-lg border border-blue-900/50">
+                                            <input
+                                                type="checkbox"
+                                                checked={useMomentum}
+                                                onChange={(e) => {
+                                                    setUseMomentum(e.target.checked);
+                                                    resetSimulation(pos1d, pos2d, eta);
+                                                }}
+                                                class="w-4 h-4 rounded text-blue-600"
+                                            />
+                                            <div class="text-xs">
+                                                <span class="font-bold text-sky-300">モメンタム項（慣性 β = 0.85）</span>
+                                                <p class="text-[10px] text-slate-400">急峻な壁での振動を相殺し、3D谷底を滑らかに突破</p>
+                                            </div>
+                                        </label>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 理論的数理分析バナー */}
+                            {stabilityAnalysis && (
+                                <div class={`rounded-xl border p-3.5 space-y-2 ${stabilityAnalysis.badgeColor}`}>
+                                    <div class="flex items-center justify-between text-xs font-bold">
+                                        <span>挙動評価:</span>
+                                        <span>{stabilityAnalysis.stateText}</span>
+                                    </div>
+                                    <p class="text-xs opacity-90 leading-relaxed">
+                                        {stabilityAnalysis.desc}
+                                    </p>
+                                    {preset.critEta && (
+                                        <div class="text-[11px] font-mono pt-1 border-t border-white/10 flex justify-between">
+                                            <span>臨界安定境界 η_crit:</span>
+                                            <span>{preset.critEta.toFixed(4)}</span>
+                                        </div>
+                                    )}
+                                    {stabilityAnalysis.contractionR !== null && (
+                                        <div class="text-[11px] font-mono flex justify-between">
+                                            <span>公比 R = 1 - η f''(x*):</span>
+                                            <span class="font-bold">{stabilityAnalysis.contractionR.toFixed(3)}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* リアルタイム計測値パネル */}
+                            <div class="bg-slate-900/90 rounded-xl border border-slate-800 p-4 space-y-2.5">
+                                <span class="text-xs font-bold text-slate-300">リアルタイム測定データ</span>
+                                <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+                                    <div class="bg-slate-950 p-2 rounded border border-slate-800/80">
+                                        <span class="text-[10px] text-slate-400 block">反復ステップ k</span>
+                                        <span class="text-sm font-bold text-white">{step}</span>
+                                    </div>
+                                    <div class="bg-slate-950 p-2 rounded border border-slate-800/80">
+                                        <span class="text-[10px] text-slate-400 block">目的関数値 f(x_k)</span>
+                                        <span class="text-sm font-bold text-amber-400">
+                                            {history.length > 0 ? history[history.length - 1].fx.toFixed(5) : '0.000'}
+                                        </span>
+                                    </div>
+                                    <div class="bg-slate-950 p-2 rounded border border-slate-800/80">
+                                        <span class="text-[10px] text-slate-400 block">
+                                            {preset.dim === 1 ? '現在位置 x_k' : '現在位置 (x, y)'}
+                                        </span>
+                                        <span class="text-xs font-bold text-sky-300 truncate block">
+                                            {preset.dim === 1
+                                                ? pos1d.toFixed(5)
+                                                : `(${pos2d[0].toFixed(2)}, ${pos2d[1].toFixed(2)})`}
+                                        </span>
+                                    </div>
+                                    <div class="bg-slate-950 p-2 rounded border border-slate-800/80">
+                                        <span class="text-[10px] text-slate-400 block">真の最小解との距離</span>
+                                        <span class="text-xs font-bold text-emerald-400">
+                                            {history.length > 0 ? history[history.length - 1].dist.toExponential(3) : '0.000'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* エンジニアの知見 */}
+                            <div class="bg-slate-900/60 rounded-xl border border-slate-800/80 p-3 text-xs text-slate-400 space-y-1">
+                                <span class="font-bold text-slate-300 block">💡 エンジニアの教訓:</span>
+                                <p class="leading-relaxed text-[11px]">
+                                    最急降下法では、学習率が「小さければ遅いだけ」ではなく、放物線の曲率 <code class="text-sky-300">f''(x)</code> に応じた安定限界を超えると一瞬で無限大へ発散します。多変数空間では細長い谷（異方性）が発生するため、モメンタム項やAdamのような適応学習率が不可欠です。
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
