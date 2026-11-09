@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ルンゲ＝クッタ法 vs オイラー法：常微分方程式の数値解法インタラクティブ教材</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #0b1120; color: #f8fafc; }
+        canvas { touch-action: none; }
+        input[type="range"] { accent-color: #10b981; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // SVG アイコンコンポーネント
+        const PlayIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
+        const PauseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
+        const StepIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+        const ResetIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>;
+
+        // プリセット問題の定義
+        const PRESETS = {
+            cooling: {
+                id: 'cooling',
+                title: '1. 冷めるお湯（減衰カーブ）',
+                badge: '超基本・直感理解',
+                badgeColor: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+                equation: 'dy/dt = -y',
+                exactFormula: 'y(t) = e^{-t}',
+                desc: '熱いお湯が室温に向かって冷めていく現象。温度が高いほど急速に冷め、ぬるくなるとゆっくり冷めます。オイラー法は下に外れ、RK4は真のカーブに吸い付きます。',
+                f: (t, y) => -y,
+                exact: (t) => Math.exp(-t),
+                t0: 0,
+                y0: 1.0,
+                tMax: 3.5,
+                yRange: [-0.2, 1.2],
+                defaultH: 0.4,
+                isSystem: false
+            },
+            standard: {
+                id: 'standard',
+                title: '2. 急カーブを描く微分方程式',
+                badge: '教科書標準例題',
+                badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+                equation: 'dy/dt = y - t² + 1',
+                exactFormula: 'y(t) = (t + 1)² - 0.5 e^t',
+                desc: '多項式と指数関数が組み合わさった急激なカーブ。オイラー法はカーブを曲がりきれず大きく遅れますが、RK4は先回りして正確にトレースします。',
+                f: (t, y) => y - t * t + 1.0,
+                exact: (t) => Math.pow(t + 1.0, 2) - 0.5 * Math.exp(t),
+                t0: 0,
+                y0: 0.5,
+                tMax: 2.2,
+                yRange: [0.0, 5.8],
+                defaultH: 0.25,
+                isSystem: false
+            },
+            oscillator: {
+                id: 'oscillator',
+                title: '3. 振り子・バネ（単振動・LC回路）',
+                badge: 'エネルギー増加現象',
+                badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                equation: 'd²x/dt² + 4x = 0  (dx/dt = v, dv/dt = -4x)',
+                exactFormula: 'x(t) = cos(2t),  v(t) = -2 sin(2t)',
+                desc: '物理法則ではエネルギーは一定ですが、オイラー法では毎ステップエネルギーが増加し、位相平面では外へ螺旋を描き、時系列では振幅が膨張します。RK4は波形と軌道を正確にキープします。',
+                f: (t, state) => [state[1], -4.0 * state[0]],
+                exact: (t) => [Math.cos(2.0 * t), -2.0 * Math.sin(2.0 * t)],
+                t0: 0,
+                y0: [1.0, 0.0], // x(0)=1, v(0)=0
+                tMax: 12.0,
+                xRange: [-2.5, 2.5],
+                vRange: [-5.0, 5.0],
+                defaultH: 0.1,
+                isSystem: true
+            }
+        };
+
+        function App() {
+            const [presetKey, setPresetKey] = useState('cooling');
+            const preset = PRESETS[presetKey];
+
+            const [h, setH] = useState(preset.defaultH);
+            const [currentStep, setCurrentStep] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [playbackSpeed, setPlaybackSpeed] = useState(400); // ms per step
+            const [showRKDetails, setShowRKDetails] = useState(true);
+
+            const canvasRef = useRef(null);
+            const timerRef = useRef(null);
+
+            // プリセット切替時にリセット
+            useEffect(() => {
+                setH(preset.defaultH);
+                setCurrentStep(0);
+                setIsPlaying(false);
+            }, [presetKey]);
+
+            // 最大ステップ数の計算
+            const maxSteps = useMemo(() => {
+                return Math.max(1, Math.floor((preset.tMax - preset.t0) / h));
+            }, [preset, h]);
+
+            // オイラー法とRK4の全ステップ履歴を事前計算
+            const history = useMemo(() => {
+                const eulerHist = [];
+                const rk4Hist = [];
+                const tHist = [];
+                const rkDetailsHist = []; // k1, k2, k3, k4
+
+                let t = preset.t0;
+                let yE = preset.y0;
+                let yR = preset.y0;
+
+                tHist.push(t);
+                eulerHist.push(yE);
+                rk4Hist.push(yR);
+
+                for (let i = 0; i < maxSteps; i++) {
+                    if (preset.isSystem) {
+                        // 連立系 (2変数: x, v)
+                        // オイラー
+                        const fe = preset.f(t, yE);
+                        const nextYE = [yE[0] + h * fe[0], yE[1] + h * fe[1]];
+
+                        // RK4
+                        const k1 = preset.f(t, yR);
+                        const yk1 = [yR[0] + 0.5 * h * k1[0], yR[1] + 0.5 * h * k1[1]];
+                        const k2 = preset.f(t + 0.5 * h, yk1);
+                        const yk2 = [yR[0] + 0.5 * h * k2[0], yR[1] + 0.5 * h * k2[1]];
+                        const k3 = preset.f(t + 0.5 * h, yk2);
+                        const yk3 = [yR[0] + h * k3[0], yR[1] + h * k3[1]];
+                        const k4 = preset.f(t + h, yk3);
+
+                        const nextYR = [
+                            yR[0] + (h / 6.0) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]),
+                            yR[1] + (h / 6.0) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1])
+                        ];
+
+                        rkDetailsHist.push({ k1, k2, k3, k4, t, y: yR });
+                        t += h;
+                        yE = nextYE;
+                        yR = nextYR;
+                    } else {
+                        // 1変数系
+                        // オイラー
+                        const fe = preset.f(t, yE);
+                        const nextYE = yE + h * fe;
+
+                        // RK4
+                        const k1 = preset.f(t, yR);
+                        const k2 = preset.f(t + 0.5 * h, yR + 0.5 * h * k1);
+                        const k3 = preset.f(t + 0.5 * h, yR + 0.5 * h * k2);
+                        const k4 = preset.f(t + h, yR + h * k3);
+                        const nextYR = yR + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4);
+
+                        rkDetailsHist.push({ k1, k2, k3, k4, t, y: yR });
+                        t += h;
+                        yE = nextYE;
+                        yR = nextYR;
+                    }
+
+                    tHist.push(t);
+                    eulerHist.push(yE);
+                    rk4Hist.push(yR);
+                }
+
+                return { tHist, eulerHist, rk4Hist, rkDetailsHist };
+            }, [preset, h, maxSteps]);
+
+            // 自動再生アニメーションループ
+            useEffect(() => {
+                if (isPlaying) {
+                    timerRef.current = setInterval(() => {
+                        setCurrentStep((prev) => {
+                            if (prev >= maxSteps) {
+                                setIsPlaying(false);
+                                return prev;
+                            }
+                            return prev + 1;
+                        });
+                    }, playbackSpeed);
+                } else {
+                    clearInterval(timerRef.current);
+                }
+                return () => clearInterval(timerRef.current);
+            }, [isPlaying, maxSteps, playbackSpeed]);
+
+            // Canvas描画
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const width = canvas.width;
+                const height = canvas.height;
+
+                ctx.clearRect(0, 0, width, height);
+
+                const validStep = Math.min(currentStep, history.tHist.length - 1);
+
+                if (!preset.isSystem) {
+                    // === 1変数関数の描画 (t vs y) ===
+                    const padLeft = 65;
+                    const padRight = 30;
+                    const padTop = 35;
+                    const padBottom = 50;
+
+                    const plotWidth = width - padLeft - padRight;
+                    const plotHeight = height - padTop - padBottom;
+
+                    const tMin = preset.t0;
+                    const tMax = preset.tMax;
+                    const [yMin, yMax] = preset.yRange;
+
+                    const toX = (t) => padLeft + ((t - tMin) / (tMax - tMin)) * plotWidth;
+                    const toY = (y) => padTop + plotHeight - ((y - yMin) / (yMax - yMin)) * plotHeight;
+
+                    // 背景グリッドと目盛
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 1;
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.font = '12px sans-serif';
+
+                    // 縦グリッド (t)
+                    const tGridCount = 6;
+                    for (let i = 0; i <= tGridCount; i++) {
+                        const tVal = tMin + (tMax - tMin) * (i / tGridCount);
+                        const cx = toX(tVal);
+                        ctx.beginPath();
+                        ctx.moveTo(cx, padTop);
+                        ctx.lineTo(cx, padTop + plotHeight);
+                        ctx.stroke();
+                        ctx.fillText(tVal.toFixed(1), cx - 10, padTop + plotHeight + 20);
+                    }
+
+                    // 横グリッド (y)
+                    const yGridCount = 5;
+                    for (let i = 0; i <= yGridCount; i++) {
+                        const yVal = yMin + (yMax - yMin) * (i / yGridCount);
+                        const cy = toY(yVal);
+                        ctx.beginPath();
+                        ctx.moveTo(padLeft, cy);
+                        ctx.lineTo(padLeft + plotWidth, cy);
+                        ctx.stroke();
+                        ctx.fillText(yVal.toFixed(1), 15, cy + 4);
+                    }
+
+                    // 軸ラベル
+                    ctx.fillStyle = '#cbd5e1';
+                    ctx.font = 'bold 13px sans-serif';
+                    ctx.fillText('時刻 t', padLeft + plotWidth / 2 - 20, height - 12);
+                    ctx.save();
+                    ctx.translate(18, padTop + plotHeight / 2 + 10);
+                    ctx.rotate(-Math.PI / 2);
+                    ctx.fillText('状態 y(t)', 0, 0);
+                    ctx.restore();
+
+                    // 1. 真の解曲線（青色の滑らかな曲線）
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    const nSamples = 150;
+                    for (let i = 0; i <= nSamples; i++) {
+                        const tVal = tMin + (tMax - tMin) * (i / nSamples);
+                        const yVal = preset.exact(tVal);
+                        const cx = toX(tVal);
+                        const cy = toY(yVal);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+
+                    // 2. オイラー法の軌道（赤色破線 & 丸マーカー）
+                    ctx.strokeStyle = '#f87171';
+                    ctx.lineWidth = 2.2;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toX(history.tHist[i]);
+                        const cy = toY(history.eulerHist[i]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // オイラー点
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toX(history.tHist[i]);
+                        const cy = toY(history.eulerHist[i]);
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // 3. ルンゲ＝クッタ法 RK4 の軌道（緑色実線 & 四角マーカー）
+                    ctx.strokeStyle = '#34d399';
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toX(history.tHist[i]);
+                        const cy = toY(history.rk4Hist[i]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+
+                    // RK4点
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toX(history.tHist[i]);
+                        const cy = toY(history.rk4Hist[i]);
+                        ctx.fillStyle = '#10b981';
+                        ctx.fillRect(cx - 5, cy - 5, 10, 10);
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 1;
+                        ctx.strokeRect(cx - 5, cy - 5, 10, 10);
+                    }
+
+                    // 4. RK4 の「4つの下見ベクトル（k1〜k4）」を可視化（現在ステップ）
+                    if (showRKDetails && validStep < history.rkDetailsHist.length) {
+                        const det = history.rkDetailsHist[validStep];
+                        const tCurr = det.t;
+                        const yCurr = det.y;
+
+                        const colors = ['#f59e0b', '#06b6d4', '#a855f7', '#ec4899'];
+                        const ks = [det.k1, det.k2, det.k3, det.k4];
+
+                        ks.forEach((kVal, idx) => {
+                            const startT = tCurr;
+                            const startY = yCurr;
+                            const endT = tCurr + h;
+                            const endY = yCurr + h * kVal;
+
+                            ctx.strokeStyle = colors[idx];
+                            ctx.lineWidth = 1.8;
+                            ctx.beginPath();
+                            ctx.moveTo(toX(startT), toY(startY));
+                            ctx.lineTo(toX(endT), toY(endY));
+                            ctx.stroke();
+
+                            // 矢印の先端
+                            const angle = Math.atan2(toY(endY) - toY(startY), toX(endT) - toX(startT));
+                            const arrowLen = 8;
+                            ctx.fillStyle = colors[idx];
+                            ctx.beginPath();
+                            ctx.moveTo(toX(endT), toY(endY));
+                            ctx.lineTo(toX(endT) - arrowLen * Math.cos(angle - Math.PI / 6), toY(endY) - arrowLen * Math.sin(angle - Math.PI / 6));
+                            ctx.lineTo(toX(endT) - arrowLen * Math.cos(angle + Math.PI / 6), toY(endY) - arrowLen * Math.sin(angle + Math.PI / 6));
+                            ctx.closePath();
+                            ctx.fill();
+                        });
+                    }
+                } else {
+                    // === 連立系（単振動モード：左に位相平面、右に時系列波形を同時描画）===
+                    const halfWidth = width / 2;
+
+                    // --- [左画面: 位相平面 x vs v] ---
+                    const padL_L = 50;
+                    const padL_R = 20;
+                    const padL_T = 35;
+                    const padL_B = 45;
+                    const plotW_L = halfWidth - padL_L - padL_R;
+                    const plotH_L = height - padL_T - padL_B;
+
+                    const [xMin, xMax] = preset.xRange;
+                    const [vMin, vMax] = preset.vRange;
+
+                    const toXL = (x) => padL_L + ((x - xMin) / (xMax - xMin)) * plotW_L;
+                    const toYL = (v) => padL_T + plotH_L - ((v - vMin) / (vMax - vMin)) * plotH_L;
+
+                    // 境界線（中央仕切り）
+                    ctx.strokeStyle = '#334155';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(halfWidth, 10);
+                    ctx.lineTo(halfWidth, height - 10);
+                    ctx.stroke();
+
+                    // 左画面タイトル
+                    ctx.fillStyle = '#f1f5f9';
+                    ctx.font = 'bold 13px sans-serif';
+                    ctx.fillText('① 位相平面軌道 (x vs v)', padL_L + plotW_L / 2 - 65, 22);
+
+                    // 左グリッド (x)
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 1;
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.font = '11px sans-serif';
+                    for (let xVal = -2; xVal <= 2; xVal += 1.0) {
+                        const cx = toXL(xVal);
+                        ctx.beginPath();
+                        ctx.moveTo(cx, padL_T);
+                        ctx.lineTo(cx, padL_T + plotH_L);
+                        ctx.stroke();
+                        ctx.fillText(xVal.toFixed(0), cx - 5, padL_T + plotH_L + 16);
+                    }
+                    // 左グリッド (v)
+                    for (let vVal = -4; vVal <= 4; vVal += 2.0) {
+                        const cy = toYL(vVal);
+                        ctx.beginPath();
+                        ctx.moveTo(padL_L, cy);
+                        ctx.lineTo(padL_L + plotW_L, cy);
+                        ctx.stroke();
+                        ctx.fillText(vVal.toFixed(0), 18, cy + 4);
+                    }
+
+                    // 左軸ラベル
+                    ctx.fillStyle = '#cbd5e1';
+                    ctx.font = 'bold 12px sans-serif';
+                    ctx.fillText('位置 x(t)', padL_L + plotW_L / 2 - 20, height - 8);
+                    ctx.save();
+                    ctx.translate(14, padL_T + plotH_L / 2 + 10);
+                    ctx.rotate(-Math.PI / 2);
+                    ctx.fillText('速度 v(t)', 0, 0);
+                    ctx.restore();
+
+                    // 左1. 真の閉軌道（青色楕円）
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    const nPts = 120;
+                    for (let i = 0; i <= nPts; i++) {
+                        const angle = (i / nPts) * 2 * Math.PI;
+                        const xVal = Math.cos(angle);
+                        const vVal = -2.0 * Math.sin(angle);
+                        if (i === 0) ctx.moveTo(toXL(xVal), toYL(vVal));
+                        else ctx.lineTo(toXL(xVal), toYL(vVal));
+                    }
+                    ctx.stroke();
+
+                    // 左2. オイラー軌道（外側へ螺旋発散）
+                    ctx.strokeStyle = '#f87171';
+                    ctx.lineWidth = 1.8;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toXL(history.eulerHist[i][0]);
+                        const cy = toYL(history.eulerHist[i][1]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // 左3. RK4軌道（緑色の閉軌道維持）
+                    ctx.strokeStyle = '#34d399';
+                    ctx.lineWidth = 2.2;
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toXL(history.rk4Hist[i][0]);
+                        const cy = toYL(history.rk4Hist[i][1]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+
+                    // 現在点マーカー
+                    if (validStep >= 0) {
+                        // オイラー点
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.arc(toXL(history.eulerHist[validStep][0]), toYL(history.eulerHist[validStep][1]), 6, 0, Math.PI * 2);
+                        ctx.fill();
+                        // RK4点
+                        ctx.fillStyle = '#10b981';
+                        ctx.fillRect(toXL(history.rk4Hist[validStep][0]) - 5, toYL(history.rk4Hist[validStep][1]) - 5, 10, 10);
+                    }
+
+                    // --- [右画面: 時系列波形 t vs x(t)] ---
+                    const padR_L = halfWidth + 50;
+                    const padR_R = 25;
+                    const padR_T = 35;
+                    const padR_B = 45;
+                    const plotW_R = width - padR_L - padR_R;
+                    const plotH_R = height - padR_T - padR_B;
+
+                    const tMin = 0;
+                    const tMax = preset.tMax;
+                    const xWaveMin = -2.5;
+                    const xWaveMax = 2.5;
+
+                    const toXR = (t) => padR_L + ((t - tMin) / (tMax - tMin)) * plotW_R;
+                    const toYR = (x) => padR_T + plotH_R - ((x - xWaveMin) / (xWaveMax - xWaveMin)) * plotH_R;
+
+                    // 右画面タイトル
+                    ctx.fillStyle = '#f1f5f9';
+                    ctx.font = 'bold 13px sans-serif';
+                    ctx.fillText('② 時系列波形 (時刻 t vs 位置 x)', padR_L + plotW_R / 2 - 80, 22);
+
+                    // 右グリッド (t)
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 1;
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.font = '11px sans-serif';
+                    for (let tVal = 0; tVal <= tMax; tVal += 3.0) {
+                        const cx = toXR(tVal);
+                        ctx.beginPath();
+                        ctx.moveTo(cx, padR_T);
+                        ctx.lineTo(cx, padR_T + plotH_R);
+                        ctx.stroke();
+                        ctx.fillText(tVal.toFixed(0), cx - 5, padR_T + plotH_R + 16);
+                    }
+                    // 右グリッド (x)
+                    for (let xVal = -2; xVal <= 2; xVal += 1.0) {
+                        const cy = toYR(xVal);
+                        ctx.beginPath();
+                        ctx.moveTo(padR_L, cy);
+                        ctx.lineTo(padR_L + plotW_R, cy);
+                        ctx.stroke();
+                        ctx.fillText(xVal.toFixed(0), padR_L - 18, cy + 4);
+                    }
+
+                    // 右軸ラベル
+                    ctx.fillStyle = '#cbd5e1';
+                    ctx.font = 'bold 12px sans-serif';
+                    ctx.fillText('時刻 t', padR_L + plotW_R / 2 - 15, height - 8);
+                    ctx.save();
+                    ctx.translate(padR_L - 25, padR_T + plotH_R / 2 + 10);
+                    ctx.rotate(-Math.PI / 2);
+                    ctx.fillText('位置 x(t)', 0, 0);
+                    ctx.restore();
+
+                    // 右1. 真のコサイン波形（青色曲線）
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 2.5;
+                    ctx.beginPath();
+                    const nTimeSamples = 180;
+                    for (let i = 0; i <= nTimeSamples; i++) {
+                        const tVal = tMin + (tMax - tMin) * (i / nTimeSamples);
+                        const xVal = Math.cos(2.0 * tVal);
+                        const cx = toXR(tVal);
+                        const cy = toYR(xVal);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+
+                    // 右2. オイラー法の波形（振幅が膨張する赤色破線）
+                    ctx.strokeStyle = '#f87171';
+                    ctx.lineWidth = 1.8;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toXR(history.tHist[i]);
+                        const cy = toYR(history.eulerHist[i][0]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // 右3. RK4の波形（振幅が一定の緑色実線）
+                    ctx.strokeStyle = '#34d399';
+                    ctx.lineWidth = 2.2;
+                    ctx.beginPath();
+                    for (let i = 0; i <= validStep; i++) {
+                        const cx = toXR(history.tHist[i]);
+                        const cy = toYR(history.rk4Hist[i][0]);
+                        if (i === 0) ctx.moveTo(cx, cy);
+                        else ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+
+                    // 右現在点マーカー
+                    if (validStep >= 0) {
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.arc(toXR(history.tHist[validStep]), toYR(history.eulerHist[validStep][0]), 5, 0, Math.PI * 2);
+                        ctx.fill();
+
+                        ctx.fillStyle = '#10b981';
+                        ctx.fillRect(toXR(history.tHist[validStep]) - 4, toYR(history.rk4Hist[validStep][0]) - 4, 8, 8);
+                    }
+                }
+            }, [preset, history, currentStep, showRKDetails, h]);
+
+            // 現在ステップでの数値情報取得
+            const currentT = history.tHist[Math.min(currentStep, history.tHist.length - 1)];
+            const currentEuler = history.eulerHist[Math.min(currentStep, history.eulerHist.length - 1)];
+            const currentRK4 = history.rk4Hist[Math.min(currentStep, history.rk4Hist.length - 1)];
+            const exactVal = preset.exact(currentT);
+
+            let eulerErr = 0;
+            let rk4Err = 0;
+            if (preset.isSystem) {
+                eulerErr = Math.sqrt(Math.pow(currentEuler[0] - exactVal[0], 2) + Math.pow(currentEuler[1] - exactVal[1], 2));
+                rk4Err = Math.sqrt(Math.pow(currentRK4[0] - exactVal[0], 2) + Math.pow(currentRK4[1] - exactVal[1], 2));
+            } else {
+                eulerErr = Math.abs(currentEuler - exactVal);
+                rk4Err = Math.abs(currentRK4 - exactVal);
+            }
+            const errRatio = rk4Err > 1e-12 ? (eulerErr / rk4Err).toFixed(1) : '∞';
+
+            return (
+                <div className="max-w-5xl mx-auto space-y-5">
+                    {/* ヘッダー */}
+                    <header className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                        <div>
+                            <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
+                                オイラー法 vs 4次ルンゲ＝クッタ法（RK4）
+                            </h1>
+                            <p className="text-slate-400 text-sm mt-1">
+                                常微分方程式の未来予測アルゴリズム：なぜ4回下見するだけで驚異的に正確になるのか？
+                            </p>
+                        </div>
+
+                        {/* 直感解説ボックス */}
+                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3 pt-4 border-t border-slate-800 text-xs">
+                            <div className="bg-red-950/20 border border-red-900/30 p-3 rounded-xl flex items-start gap-2.5">
+                                <span className="text-lg">🚗</span>
+                                <div>
+                                    <div className="font-bold text-red-400 text-sm">オイラー法（Euler's Method）</div>
+                                    <p className="text-slate-300 mt-0.5 leading-relaxed">
+                                        「今いる場所のスピードだけを見て、次の交差点までハンドルを固定して真っ直ぐ走る」。カーブを曲がりきれず、コースの外へ大きく外れてしまいます。
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="bg-emerald-950/20 border border-emerald-900/30 p-3 rounded-xl flex items-start gap-2.5">
+                                <span className="text-lg">🎯</span>
+                                <div>
+                                    <div className="font-bold text-emerald-400 text-sm">4次ルンゲ＝クッタ法（RK4）</div>
+                                    <p className="text-slate-300 mt-0.5 leading-relaxed">
+                                        「中点や先々の傾きを4回下見（予測）して賢くブレンドする」。急なカーブでも先回りして道路にピタリと吸い付き、驚異的な高精度を誇ります。
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* コントロールパネル */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                        <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl">
+                            <div>
+                                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">
+                                    学習プリセット問題
+                                </label>
+                                <div className="space-y-1.5">
+                                    {Object.values(PRESETS).map((p) => (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => setPresetKey(p.id)}
+                                            className={`w-full text-left p-2.5 rounded-xl border text-xs transition flex flex-col gap-1 ${
+                                                presetKey === p.id 
+                                                    ? 'bg-emerald-950/40 border-emerald-500/50 text-white shadow-sm' 
+                                                    : 'bg-slate-800/40 border-slate-700/50 text-slate-300 hover:bg-slate-800'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between">
+                                                <span className="font-bold text-sm">{p.title}</span>
+                                                <span className={`px-2 py-0.5 text-[10px] rounded-full border ${p.badgeColor}`}>
+                                                    {p.badge}
+                                                </span>
+                                            </div>
+                                            <span className="text-slate-400 font-mono">{p.equation}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 刻み幅 h スライダー */}
+                            <div className="pt-3 border-t border-slate-800">
+                                <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-xs font-bold text-slate-300">時間刻み幅 h (ステップサイズ)</span>
+                                    <span className="text-sm font-mono font-bold text-emerald-400">{h.toFixed(3)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0.05"
+                                    max={preset.isSystem ? "0.3" : "0.6"}
+                                    step="0.01"
+                                    value={h}
+                                    onChange={(e) => {
+                                        setH(parseFloat(e.target.value));
+                                        setCurrentStep(0);
+                                        setIsPlaying(false);
+                                    }}
+                                    className="w-full cursor-pointer h-2 bg-slate-800 rounded-lg appearance-none"
+                                />
+                                <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                                    <span>細かく (高精度・計算多)</span>
+                                    <span>粗く (誤差大・発散注意)</span>
+                                </div>
+                            </div>
+
+                            {/* 再生コントロール */}
+                            <div className="pt-3 border-t border-slate-800 space-y-2">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => setIsPlaying(!isPlaying)}
+                                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-xs transition ${
+                                            isPlaying 
+                                                ? 'bg-amber-600 hover:bg-amber-500 text-white' 
+                                                : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                        }`}
+                                    >
+                                        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                                        {isPlaying ? '一時停止' : '自動再生'}
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setIsPlaying(false);
+                                            setCurrentStep(Math.min(maxSteps, currentStep + 1));
+                                        }}
+                                        disabled={currentStep >= maxSteps}
+                                        className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40 transition"
+                                        title="1ステップ進む"
+                                    >
+                                        <StepIcon />
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setIsPlaying(false);
+                                            setCurrentStep(0);
+                                        }}
+                                        className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+                                        title="最初に戻す"
+                                    >
+                                        <ResetIcon />
+                                    </button>
+                                </div>
+
+                                {/* RK4 詳細ベクトル可視化トグル */}
+                                {!preset.isSystem && (
+                                    <label className="flex items-center gap-2 cursor-pointer pt-2 text-xs text-slate-300">
+                                        <input
+                                            type="checkbox"
+                                            checked={showRKDetails}
+                                            onChange={(e) => setShowRKDetails(e.target.checked)}
+                                            className="rounded bg-slate-800 border-slate-700 text-emerald-500 focus:ring-0"
+                                        />
+                                        <span>RK4の「4つの下見ベクトル（k1〜k4）」を表示</span>
+                                    </label>
+                                )}
+                            </div>
+
+                            {/* 数値メーター表示 */}
+                            <div className="pt-3 border-t border-slate-800 space-y-2 text-xs">
+                                <div className="flex justify-between items-center text-slate-400">
+                                    <span>現在時刻 t:</span>
+                                    <span className="font-mono text-white font-bold">{currentT.toFixed(2)} / {preset.tMax.toFixed(1)}</span>
+                                </div>
+                                <div className="flex justify-between items-center text-slate-400">
+                                    <span>ステップ数:</span>
+                                    <span className="font-mono text-white font-bold">{currentStep} / {maxSteps}</span>
+                                </div>
+
+                                <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80 space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                        <span className="flex items-center gap-1.5 text-red-400 font-semibold">
+                                            <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span> オイラー誤差:
+                                        </span>
+                                        <span className="font-mono font-bold text-red-300">{eulerErr.toExponential(3)}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                                            <span className="w-2.5 h-2.5 bg-emerald-500"></span> RK4誤差:
+                                        </span>
+                                        <span className="font-mono font-bold text-emerald-300">{rk4Err.toExponential(3)}</span>
+                                    </div>
+                                    <div className="pt-1.5 mt-1.5 border-t border-slate-800 flex justify-between items-center">
+                                        <span className="text-slate-400 font-semibold">精度倍率:</span>
+                                        <span className="font-mono font-bold text-amber-300">RK4が 約 {errRatio} 倍 高精度！</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* メイン可視化 Canvas */}
+                        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-4 md:p-5 flex flex-col shadow-xl">
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3 text-xs">
+                                <div className="flex items-center gap-4">
+                                    <div className="flex items-center gap-1.5">
+                                        <div className="w-3.5 h-1 bg-sky-400 rounded"></div>
+                                        <span className="text-sky-300 font-medium">真解（厳密解）</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <div className="w-3.5 h-1 bg-red-400 rounded border-dashed"></div>
+                                        <span className="text-red-300 font-medium">オイラー法 (1次)</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <div className="w-3 h-3 bg-emerald-500 rounded-sm"></div>
+                                        <span className="text-emerald-300 font-medium">4次ルンゲ＝クッタ (4次)</span>
+                                    </div>
+                                </div>
+                                <span className="text-slate-400 text-[11px] font-mono">
+                                    {preset.isSystem ? '① 位相平面軌道 (x vs v) ＆ ② 時系列波形 x(t)' : '解曲線 y(t)'}
+                                </span>
+                            </div>
+
+                            <div className="relative flex-1 min-h-[380px] bg-slate-950 rounded-xl border border-slate-800/80 overflow-hidden">
+                                <canvas
+                                    ref={canvasRef}
+                                    width={700}
+                                    height={420}
+                                    className="w-full h-full block"
+                                />
+                            </div>
+
+                            {/* 凡例・下見ベクトルの解説（RK4詳細表示時） */}
+                            {showRKDetails && !preset.isSystem && (
+                                <div className="mt-3 p-3 bg-slate-950/40 rounded-xl border border-slate-800/60 text-xs text-slate-300 flex flex-wrap items-center justify-around gap-2">
+                                    <span className="font-bold text-slate-400">RK4の4回サンプリング:</span>
+                                    <span className="text-amber-400 font-medium">● k1: 始点の傾き</span>
+                                    <span className="text-cyan-400 font-medium">● k2: 中点の下見①</span>
+                                    <span className="text-purple-400 font-medium">● k3: 中点の下見②</span>
+                                    <span className="text-pink-400 font-medium">● k4: 終点の下見</span>
+                                    <span className="text-emerald-300 font-bold">⇒ (1:2:2:1)の加重平均で進む！</span>
+                                </div>
+                            )}
+
+                            {/* プリセットの解説文 */}
+                            <div className="mt-3 text-xs text-slate-400 bg-slate-800/30 p-3 rounded-xl border border-slate-800">
+                                <span className="font-bold text-slate-200">💡 ポイント解説: </span>
+                                {preset.desc}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 下部解説カード：初心者のための常微分方程式とルンゲクッタ法の仕組み */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 md:p-6 shadow-xl space-y-4">
+                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                            <span>📖</span> 微分方程式になじみがない人のための「超直感」早わかりガイド
+                        </h2>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs leading-relaxed">
+                            <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl space-y-2">
+                                <div className="font-bold text-sky-400 text-sm">1. 微分方程式とは？</div>
+                                <p className="text-slate-300">
+                                    「今の状態（温度、位置、残量）」を入れると、次の瞬間に「どっちへ、どれくらいの勢いで変化するか（スピード・傾き）」を教えてくれるルールです。
+                                </p>
+                                <p className="text-slate-400">
+                                    車の運転で例えると、メーターが示す速度の指示に従って、目的地までの軌跡を描き出していくゲームのようなものです。
+                                </p>
+                            </div>
+
+                            <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl space-y-2">
+                                <div className="font-bold text-red-400 text-sm">2. オイラー法の弱点</div>
+                                <p className="text-slate-300">
+                                    今いる地点のスピードだけを見て、次のステップまでハンドルをまっすぐ固定して進みます。
+                                </p>
+                                <p className="text-slate-400">
+                                    道路が急カーブしていても直進してしまうため、刻み幅（歩幅）が少しでも大きいと、コースからどんどん外れ、振り子の計算ではエネルギーが増加して振幅が広がります。
+                                </p>
+                            </div>
+
+                            <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl space-y-2">
+                                <div className="font-bold text-emerald-400 text-sm">3. RK4の賢い知恵</div>
+                                <p className="text-slate-300">
+                                    一気に進む前に、中間地点（中点）や先々のスピードを4回下見して、「1 : 2 : 2 : 1」の割合でブレンドして進みます。
+                                </p>
+                                <p className="text-slate-400">
+                                    微分の難しい手計算をしなくても、関数の値を4回計算するだけで、歩幅を半分にすると誤差が 1/16 に激減するという驚異の4次精度を達成します！
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
