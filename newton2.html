@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多次元ニュートン法 vs 準ニュートン法（BFGS）アルゴリズム可視化</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Three.js & OrbitControls for 3D Surface Rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #030712; color: #f9fafb; }
+        canvas { touch-action: none; }
+        input[type="range"] { accent-color: #38bdf8; }
+        .glass-panel { background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(8px); border: 1px solid rgba(55, 65, 81, 0.5); }
+        .mono-num { font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 p-3 md:p-6">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        // =========================================================================
+        // SVG アイコン
+        // =========================================================================
+        const PlayIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
+        const PauseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
+        const StepIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>;
+        const ResetIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>;
+
+        // =========================================================================
+        // プリセット問題の定義
+        // =========================================================================
+        const PRESETS = {
+            ellipse: {
+                id: 'ellipse',
+                name: '楕円ボウル曲面',
+                subtitle: '二次関数・条件数大：ニュートン法は「1歩」で解けるか？',
+                desc: '縦横の曲率比が10倍異なる悪条件楕円ボウル。ニュートン法は曲率を完全に捉え、初期点がどこであっても理論上わずか「1ステップ」で最適解 (0, 0) へ垂直直撃します。',
+                formula: 'f(x, y) = x^2 + 10 y^2',
+                gradFormula: '∇f = [2x, 20y]',
+                hessianFormula: 'H = [[2, 0], [0, 20]] （正定値）',
+                f: (x, y) => x * x + 10.0 * y * y,
+                grad: (x, y) => [2.0 * x, 20.0 * y],
+                hessian: (x, y) => [[2.0, 0.0], [0.0, 20.0]],
+                optX: [0.0, 0.0],
+                optVal: 0.0,
+                defaultPos: [8.0, 4.0],
+                xRange: [-10.0, 10.0],
+                yRange: [-5.5, 5.5],
+                zMaxView: 130.0,
+                gdEta: 0.08,
+                contourLevels: [5, 20, 50, 90, 140, 200]
+            },
+            saddle: {
+                id: 'saddle',
+                name: '鞍点トラップ関数',
+                subtitle: 'Saddle Point：ヘッセ行列の負の固有値と符号反転パニック',
+                desc: '局所極小 (1, 0) と鞍点 (-1, 0) を併せ持つ曲面。鞍点近傍ではヘッセ行列の固有値が正負混在（不定符号）となるため、純粋ニュートン法は谷底ではなく鞍点に向かって引き寄せられ停止・破綻します。',
+                formula: 'f(x, y) = x^3 - 3x + y^2 + 2',
+                gradFormula: '∇f = [3x^2 - 3, 2y]',
+                hessianFormula: 'H = [[6x, 0], [0, 2]]',
+                f: (x, y) => x * x * x - 3.0 * x + y * y + 2.0,
+                grad: (x, y) => [3.0 * x * x - 3.0, 2.0 * y],
+                hessian: (x, y) => [[6.0 * x, 0.0], [0.0, 2.0]],
+                optX: [1.0, 0.0],
+                optVal: 0.0,
+                saddlePt: [-1.0, 0.0],
+                saddleVal: 4.0,
+                defaultPos: [-1.45, 1.2],
+                xRange: [-2.6, 2.6],
+                yRange: [-2.8, 2.8],
+                zMaxView: 16.0,
+                gdEta: 0.12,
+                contourLevels: [0.4, 1.2, 2.5, 4.2, 7.0, 11.0]
+            },
+            singular: {
+                id: 'singular',
+                name: '特異点（ゼロ除算）関数',
+                subtitle: 'Singular Matrix：det(H) = 0 による逆行列計算クラッシュ',
+                desc: 'x=0 において ∂²f/∂x² = 12x² = 0 となり、ヘッセ行列が特異行列（det(H)=0）になる関数。純粋ニュートン法は逆行列が存在せずゼロ除算エラーで即座にクラッシュします。',
+                formula: 'f(x, y) = x^4 + y^2',
+                gradFormula: '∇f = [4x^3, 2y]',
+                hessianFormula: 'H = [[12x^2, 0], [0, 2]]',
+                f: (x, y) => Math.pow(x, 4) + y * y,
+                grad: (x, y) => [4.0 * Math.pow(x, 3), 2.0 * y],
+                hessian: (x, y) => [[12.0 * x * x, 0.0], [0.0, 2.0]],
+                optX: [0.0, 0.0],
+                optVal: 0.0,
+                defaultPos: [0.0, 2.0],
+                xRange: [-2.5, 2.5],
+                yRange: [-2.5, 2.5],
+                zMaxView: 18.0,
+                gdEta: 0.15,
+                contourLevels: [0.2, 0.8, 2.0, 4.5, 8.5, 14.0]
+            },
+            rosenbrock: {
+                id: 'rosenbrock',
+                name: 'ローゼンブロック（バナナ谷）',
+                subtitle: '難関の細長い湾曲谷：一次収束 vs 超線形収束（BFGS）',
+                desc: '数学的に有名な難関最適化問題。最急降下法は急峻な両壁で跳ね返り谷底で停滞。純粋ニュートン法は非線形性のため巨大ジャンプして吹き飛びやすい一方、準ニュートン法（BFGS）は曲率を学習して滑空します。',
+                formula: 'f(x, y) = 10(y - x^2)^2 + (1 - x)^2',
+                gradFormula: '∇f = [-40x(y-x^2) - 2(1-x), 20(y-x^2)]',
+                hessianFormula: 'H = [[120x^2 - 40y + 2, -40x], [-40x, 20]]',
+                f: (x, y) => 10.0 * Math.pow(y - x * x, 2) + Math.pow(1.0 - x, 2),
+                grad: (x, y) => [
+                    -40.0 * x * (y - x * x) - 2.0 * (1.0 - x),
+                    20.0 * (y - x * x)
+                ],
+                hessian: (x, y) => [
+                    [120.0 * x * x - 40.0 * y + 2.0, -40.0 * x],
+                    [-40.0 * x, 20.0]
+                ],
+                optX: [1.0, 1.0],
+                optVal: 0.0,
+                defaultPos: [-1.2, 1.0],
+                xRange: [-1.8, 1.8],
+                yRange: [-0.4, 2.2],
+                zMaxView: 50.0,
+                gdEta: 0.015,
+                contourLevels: [0.5, 2.0, 6.0, 14.0, 28.0, 48.0]
+            },
+            himmelblau: {
+                id: 'himmelblau',
+                name: 'ヒメルブラウ多峰性曲面',
+                subtitle: '4つの大域解と多数の鞍点：初期値による引き込み領域',
+                desc: '4箇所の等しい極小値（値0）と中央の山・複数の鞍点を持つベンチマーク。探索開始点によってどの極小解に吸い込まれるかが異なり、アルゴリズムによるダイナミクスが大きく分かれます。',
+                formula: 'f(x, y) = (x^2 + y - 11)^2 + (x + y^2 - 7)^2',
+                gradFormula: '∇f = [4x(x^2+y-11)+2(x+y^2-7), 2(x^2+y-11)+4y(x+y^2-7)]',
+                hessianFormula: 'H = [[12x^2+4y-42, 4x+4y], [4x+4y, 4x+12y^2-26]]',
+                f: (x, y) => Math.pow(x * x + y - 11.0, 2) + Math.pow(x + y * y - 7.0, 2),
+                grad: (x, y) => [
+                    4.0 * x * (x * x + y - 11.0) + 2.0 * (x + y * y - 7.0),
+                    2.0 * (x * x + y - 11.0) + 4.0 * y * (x + y * y - 7.0)
+                ],
+                hessian: (x, y) => [
+                    [12.0 * x * x + 4.0 * y - 42.0, 4.0 * x + 4.0 * y],
+                    [4.0 * x + 4.0 * y, 4.0 * x + 12.0 * y * y - 26.0]
+                ],
+                optX: [3.0, 2.0],
+                optVal: 0.0,
+                defaultPos: [0.1, 0.1],
+                xRange: [-5.2, 5.2],
+                yRange: [-5.2, 5.2],
+                zMaxView: 220.0,
+                gdEta: 0.006,
+                contourLevels: [5, 18, 45, 90, 150, 230]
+            }
+        };
+
+        // =========================================================================
+        // 線形代数 & 最適化の基本計算ユーティリティ
+        // =========================================================================
+
+        // 2x2 ニュートン方程式 H d = -g を解く
+        function solveNewtonStep(H, g) {
+            const det = H[0][0] * H[1][1] - H[0][1] * H[1][0];
+            if (Math.abs(det) < 1e-9) {
+                return { singular: true, det: det, step: [0, 0] };
+            }
+            // 逆行列 H^(-1) * (-g)
+            const dx = -(H[1][1] * g[0] - H[0][1] * g[1]) / det;
+            const dy = -(-H[1][0] * g[0] + H[0][0] * g[1]) / det;
+            return { singular: false, det: det, step: [dx, dy] };
+        }
+
+        // 2x2 実対称行列の固有値と正定値性判定
+        function analyzeHessian(H) {
+            const a = H[0][0], b = H[0][1], c = H[1][1];
+            const tr = a + c;
+            const det = a * c - b * b;
+            const disc = Math.max(0, (a - c) * (a - c) + 4.0 * b * b);
+            const sqrtDisc = Math.sqrt(disc);
+            const lambda1 = (tr + sqrtDisc) / 2.0;
+            const lambda2 = (tr - sqrtDisc) / 2.0;
+
+            let type = 'positive_definite';
+            let label = '正定値 (極小方向)';
+            let color = 'text-emerald-400 border-emerald-500 bg-emerald-950/60';
+            let desc = 'すべての固有値が正。お椀の底に向かって自然に降下できます。';
+
+            if (Math.abs(det) < 1e-8) {
+                type = 'singular';
+                label = '特異行列 (det ≈ 0)';
+                color = 'text-rose-400 border-rose-500 bg-rose-950/60';
+                desc = '逆行列が存在せずゼロ除算エラーが発生します。';
+            } else if (lambda1 * lambda2 < 0) {
+                type = 'indefinite';
+                label = '不定符号 (鞍点！)';
+                color = 'text-amber-400 border-amber-500 bg-amber-950/60';
+                desc = '固有値に正と負が混在。一方は谷、一方は山のためニュートン法は逆走・停止します。';
+            } else if (lambda1 < 0 && lambda2 < 0) {
+                type = 'negative_definite';
+                label = '負定値 (山頂方向)';
+                color = 'text-purple-400 border-purple-500 bg-purple-950/60';
+                desc = 'すべての固有値が負。谷底ではなく山の頂上へ登ってしまいます。';
+            }
+
+            return { lambda1, lambda2, det, type, label, color, desc };
+        }
+
+        // Armijo 直線探索（バックトラッキング）
+        function armijoLineSearch(f, grad, x, d, maxAlpha = 1.0) {
+            const c1 = 1e-4;
+            const fx = f(x[0], x[1]);
+            const g = grad(x[0], x[1]);
+            const slope = g[0] * d[0] + g[1] * d[1];
+
+            // 降下方向でない場合（傾きが正またはほぼ0）
+            if (slope >= 0) {
+                return 0.1;
+            }
+
+            let alpha = maxAlpha;
+            for (let i = 0; i < 20; i++) {
+                const nextX = x[0] + alpha * d[0];
+                const nextY = x[1] + alpha * d[1];
+                if (f(nextX, nextY) <= fx + c1 * alpha * slope) {
+                    return alpha;
+                }
+                alpha *= 0.5;
+            }
+            return alpha;
+        }
+
+        // BFGS 近似逆ヘッセ行列 V の更新
+        function updateBFGS(V, s, y) {
+            const ys = y[0] * s[0] + y[1] * s[1];
+            // 正定値性を損なう更新はスキップ
+            if (ys <= 1e-11) {
+                return V;
+            }
+            const rho = 1.0 / ys;
+
+            // (I - rho * s * y^T) V (I - rho * y * s^T) + rho * s * s^T
+            const syT = [
+                [s[0] * y[0], s[0] * y[1]],
+                [s[1] * y[0], s[1] * y[1]]
+            ];
+            const y_sT = [
+                [y[0] * s[0], y[0] * s[1]],
+                [y[1] * s[0], y[1] * s[1]]
+            ];
+
+            const M1 = [
+                [1.0 - rho * syT[0][0], -rho * syT[0][1]],
+                [-rho * syT[1][0], 1.0 - rho * syT[1][1]]
+            ];
+            const M2 = [
+                [1.0 - rho * y_sT[0][0], -rho * y_sT[0][1]],
+                [-rho * y_sT[1][0], 1.0 - rho * y_sT[1][1]]
+            ];
+
+            // M1 * V
+            const M1V = [
+                [M1[0][0] * V[0][0] + M1[0][1] * V[1][0], M1[0][0] * V[0][1] + M1[0][1] * V[1][1]],
+                [M1[1][0] * V[0][0] + M1[1][1] * V[1][0], M1[1][0] * V[0][1] + M1[1][1] * V[1][1]]
+            ];
+
+            // (M1 * V) * M2
+            const term1 = [
+                [M1V[0][0] * M2[0][0] + M1V[0][1] * M2[1][0], M1V[0][0] * M2[0][1] + M1V[0][1] * M2[1][1]],
+                [M1V[1][0] * M2[0][0] + M1V[1][1] * M2[1][0], M1V[1][0] * M2[0][1] + M1V[1][1] * M2[1][1]]
+            ];
+
+            // + rho * s * s^T
+            const nextV = [
+                [term1[0][0] + rho * s[0] * s[0], term1[0][1] + rho * s[0] * s[1]],
+                [term1[1][0] + rho * s[1] * s[0], term1[1][1] + rho * s[1] * s[1]]
+            ];
+
+            // 対称化の保持
+            const sym = (nextV[0][1] + nextV[1][0]) / 2.0;
+            nextV[0][1] = sym;
+            nextV[1][0] = sym;
+
+            return nextV;
+        }
+
+        // =========================================================================
+        // 3D Three.js WebGL ビューワーコンポーネント
+        // =========================================================================
+        const ThreeSurfaceViewer = ({ preset, algos, activeMode, wireframe }) => {
+            const mountRef = useRef(null);
+            const sceneRef = useRef(null);
+            const cameraRef = useRef(null);
+            const rendererRef = useRef(null);
+            const controlsRef = useRef(null);
+            const surfaceMeshRef = useRef(null);
+            const markersRef = useRef({ opt: null, saddle: null });
+            const ballsRef = useRef({});
+            const linesRef = useRef({});
+
+            const [xMin, xMax] = preset.xRange;
+            const [yMin, yMax] = preset.yRange;
+            const maxSpan = Math.max(xMax - xMin, yMax - yMin);
+            const heightScale = 4.2 / (preset.zMaxView || 30.0);
+
+            // Three.js 座標変換
+            const toThreePos = useCallback((x, y, zVal) => {
+                const z = zVal !== undefined ? zVal : preset.f(x, y);
+                const tx = ((x - (xMin + xMax) / 2) / maxSpan) * 10;
+                const tz = ((y - (yMin + yMax) / 2) / maxSpan) * 10;
+                const safeZ = Math.min((preset.zMaxView || 30.0) * 1.35, Math.max(-5.0, z));
+                const ty = (safeZ * heightScale) - 2.2;
+                return new THREE.Vector3(tx, ty, tz);
+            }, [preset, xMin, xMax, yMin, yMax, maxSpan, heightScale]);
+
+            // 1. 初期化
+            useEffect(() => {
+                const container = mountRef.current;
+                if (!container) return;
+
+                const width = container.clientWidth;
+                const height = container.clientHeight || 440;
+
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x030712); // Tailwind Slate 950
+                sceneRef.current = scene;
+
+                const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+                camera.position.set(11, 10, 14);
+                cameraRef.current = camera;
+
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(width, height);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                renderer.shadowMap.enabled = true;
+                rendererRef.current = renderer;
+                container.innerHTML = '';
+                container.appendChild(renderer.domElement);
+
+                const controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.target.set(0, 0, 0);
+                controlsRef.current = controls;
+
+                // ライティング
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+                scene.add(ambientLight);
+
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+                dirLight.position.set(12, 18, 10);
+                scene.add(dirLight);
+
+                const pointLight = new THREE.PointLight(0x38bdf8, 1.3, 35);
+                pointLight.position.set(-8, 10, -8);
+                scene.add(pointLight);
+
+                let animId;
+                const animate = () => {
+                    animId = requestAnimationFrame(animate);
+                    controls.update();
+                    renderer.render(scene, camera);
+                };
+                animate();
+
+                const handleResize = () => {
+                    if (!container) return;
+                    const w = container.clientWidth;
+                    const h = container.clientHeight || 440;
+                    camera.aspect = w / h;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(w, h);
+                };
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    cancelAnimationFrame(animId);
+                    window.removeEventListener('resize', handleResize);
+                    renderer.dispose();
+                    if (container && renderer.domElement) {
+                        container.removeChild(renderer.domElement);
+                    }
+                };
+            }, []);
+
+            // 2. プリセット変更時に曲面メッシュを再生成
+            useEffect(() => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+
+                if (surfaceMeshRef.current) {
+                    scene.remove(surfaceMeshRef.current);
+                    surfaceMeshRef.current.geometry.dispose();
+                }
+                if (markersRef.current.opt) scene.remove(markersRef.current.opt);
+                if (markersRef.current.saddle) scene.remove(markersRef.current.saddle);
+
+                const nx = 110, ny = 110;
+                const geom = new THREE.BufferGeometry();
+                const positions = [];
+                const colors = [];
+                const indices = [];
+                const maxZ = preset.zMaxView || 30.0;
+
+                for (let j = 0; j <= ny; j++) {
+                    const y = yMin + (j / ny) * (yMax - yMin);
+                    for (let i = 0; i <= nx; i++) {
+                        const x = xMin + (i / nx) * (xMax - xMin);
+                        const z = preset.f(x, y);
+                        const vPos = toThreePos(x, y, z);
+                        positions.push(vPos.x, vPos.y, vPos.z);
+
+                        // カラーマップ（青 -> シアン -> マゼンタ -> 黄）
+                        const t = Math.min(1.0, Math.max(0.0, z / maxZ));
+                        const color = new THREE.Color();
+                        const hue = (225 - t * 215) / 360;
+                        color.setHSL(hue, 0.85, 0.42 + t * 0.16);
+                        colors.push(color.r, color.g, color.b);
+                    }
+                }
+
+                for (let j = 0; j < ny; j++) {
+                    for (let i = 0; i < nx; i++) {
+                        const a = j * (nx + 1) + i;
+                        const b = j * (nx + 1) + (i + 1);
+                        const c = (j + 1) * (nx + 1) + i;
+                        const d = (j + 1) * (nx + 1) + (i + 1);
+                        if ((i + j) % 2 === 0) {
+                            indices.push(a, c, b);
+                            indices.push(b, c, d);
+                        } else {
+                            indices.push(a, c, d);
+                            indices.push(a, d, b);
+                        }
+                    }
+                }
+
+                geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                geom.setIndex(indices);
+                geom.computeVertexNormals();
+
+                const mat = new THREE.MeshStandardMaterial({
+                    vertexColors: true,
+                    side: THREE.DoubleSide,
+                    roughness: 0.35,
+                    metalness: 0.15,
+                    wireframe: wireframe
+                });
+
+                const surfaceMesh = new THREE.Mesh(geom, mat);
+                scene.add(surfaceMesh);
+                surfaceMeshRef.current = surfaceMesh;
+
+                // 最適解マーカー（エメラルド緑球）
+                const optPos = toThreePos(preset.optX[0], preset.optX[1], preset.optVal);
+                const optGeom = new THREE.SphereGeometry(0.24, 16, 16);
+                const optMat = new THREE.MeshBasicMaterial({ color: 0x10b981 });
+                const optMesh = new THREE.Mesh(optGeom, optMat);
+                optMesh.position.copy(optPos);
+                scene.add(optMesh);
+                markersRef.current.opt = optMesh;
+
+                // 鞍点マーカー（アンバー色ダイヤ）
+                if (preset.saddlePt) {
+                    const saddlePos = toThreePos(preset.saddlePt[0], preset.saddlePt[1], preset.saddleVal);
+                    const sGeom = new THREE.OctahedronGeometry(0.32, 0);
+                    const sMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, wireframe: false });
+                    const sMesh = new THREE.Mesh(sGeom, sMat);
+                    sMesh.position.copy(saddlePos);
+                    scene.add(sMesh);
+                    markersRef.current.saddle = sMesh;
+                }
+
+            }, [preset, wireframe, toThreePos]);
+
+            // 3. ボールと軌跡のリアルタイム描画
+            useEffect(() => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+
+                const algoKeys = activeMode === 'vs' ? ['gd', 'newton', 'bfgs'] : [activeMode];
+                const algoStyles = {
+                    gd: { color: 0xf43f5e, name: '最急降下法', size: 0.22 },
+                    newton: { color: 0xf59e0b, name: 'ニュートン法', size: 0.26 },
+                    bfgs: { color: 0x38bdf8, name: 'BFGS法', size: 0.24 }
+                };
+
+                // クリーンアップ：不要になったアルゴリズムの表示オブジェクトを削除
+                ['gd', 'newton', 'bfgs'].forEach(key => {
+                    if (!algoKeys.includes(key)) {
+                        if (ballsRef.current[key]) {
+                            scene.remove(ballsRef.current[key]);
+                            delete ballsRef.current[key];
+                        }
+                        if (linesRef.current[key]) {
+                            scene.remove(linesRef.current[key]);
+                            delete linesRef.current[key];
+                        }
+                    }
+                });
+
+                algoKeys.forEach(key => {
+                    const data = algos[key];
+                    if (!data) return;
+                    const style = algoStyles[key];
+
+                    // ボールの作成または更新
+                    if (!ballsRef.current[key]) {
+                        const geom = new THREE.SphereGeometry(style.size, 20, 20);
+                        const mat = new THREE.MeshStandardMaterial({
+                            color: style.color,
+                            emissive: style.color,
+                            emissiveIntensity: 0.35,
+                            roughness: 0.2,
+                            metalness: 0.6
+                        });
+                        const mesh = new THREE.Mesh(geom, mat);
+                        scene.add(mesh);
+                        ballsRef.current[key] = mesh;
+                    }
+
+                    if (data.status === 'diverged') {
+                        ballsRef.current[key].visible = false;
+                    } else {
+                        ballsRef.current[key].visible = true;
+                        const ballPos = toThreePos(data.pos[0], data.pos[1]);
+                        ballPos.y += 0.28; // 曲面から少し浮かせる
+                        ballsRef.current[key].position.copy(ballPos);
+                    }
+
+                    // 軌跡ラインの作成または更新
+                    if (linesRef.current[key]) {
+                        scene.remove(linesRef.current[key]);
+                        linesRef.current[key].geometry.dispose();
+                    }
+
+                    if (data.history.length > 1) {
+                        const points = data.history.map(h => {
+                            const p = toThreePos(h.x, h.y);
+                            p.y += 0.16;
+                            return p;
+                        });
+                        const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+                        const lineMat = new THREE.LineBasicMaterial({
+                            color: style.color,
+                            linewidth: 2.5
+                        });
+                        const line = new THREE.Line(lineGeom, lineMat);
+                        scene.add(line);
+                        linesRef.current[key] = line;
+                    }
+                });
+
+            }, [algos, activeMode, toThreePos]);
+
+            // 視点リセット
+            const handleResetCamera = () => {
+                if (cameraRef.current && controlsRef.current) {
+                    cameraRef.current.position.set(11, 10, 14);
+                    controlsRef.current.target.set(0, 0, 0);
+                    controlsRef.current.update();
+                }
+            };
+
+            return (
+                <div class="relative w-full h-[400px] md:h-[460px] rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shadow-inner">
+                    <div ref={mountRef} class="w-full h-full cursor-grab active:cursor-grabbing" />
+                    <div class="absolute top-3 right-3 flex items-center gap-2 bg-slate-900/85 backdrop-blur px-2.5 py-1.5 rounded-lg border border-slate-700/60 text-xs">
+                        <button
+                            onClick={handleResetCamera}
+                            class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition"
+                            title="視点を初期位置に戻す"
+                        >
+                            👁️ 視点リセット
+                        </button>
+                    </div>
+                    <div class="absolute bottom-2 left-3 text-[11px] text-slate-400 bg-slate-900/80 backdrop-blur px-2 py-1 rounded border border-slate-800">
+                        🖱️ 左ドラッグ: 360°回転 | ホイール: ズーム | 右ドラッグ: 平行移動
+                    </div>
+                </div>
+            );
+        };
+
+        // =========================================================================
+        // 2D 等高線キャンバスコンポーネント (クリックで初期位置指定)
+        // =========================================================================
+        const ContourMapView = ({ preset, algos, activeMode, onSetInitialPos }) => {
+            const canvasRef = useRef(null);
+            const [xMin, xMax] = preset.xRange;
+            const [yMin, yMax] = preset.yRange;
+
+            const handleCanvasClick = (e) => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const rect = canvas.getBoundingClientRect();
+                const px = e.clientX - rect.left;
+                const py = e.clientY - rect.top;
+                const x = xMin + (px / rect.width) * (xMax - xMin);
+                const y = yMax - (py / rect.height) * (yMax - yMin);
+                onSetInitialPos([x, y]);
+            };
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const W = canvas.width;
+                const H = canvas.height;
+
+                ctx.fillStyle = '#030712';
+                ctx.fillRect(0, 0, W, H);
+
+                const toPxX = (x) => ((x - xMin) / (xMax - xMin)) * W;
+                const toPxY = (y) => (1.0 - (y - yMin) / (yMax - yMin)) * H;
+
+                // 座標軸
+                ctx.strokeStyle = '#1f2937';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(toPxX(0), 0); ctx.lineTo(toPxX(0), H);
+                ctx.moveTo(0, toPxY(0)); ctx.lineTo(W, toPxY(0));
+                ctx.stroke();
+
+                // 等高線（グリッドサンプリングによる簡易描画）
+                const levels = preset.contourLevels || [2, 5, 10, 25, 50, 100];
+                const res = 70;
+                const stepX = (xMax - xMin) / res;
+                const stepY = (yMax - yMin) / res;
+
+                ctx.lineWidth = 1.0;
+                levels.forEach((lvl, lvlIdx) => {
+                    ctx.strokeStyle = `rgba(56, 189, 248, ${0.12 + (lvlIdx / levels.length) * 0.3})`;
+                    for (let i = 0; i < res; i++) {
+                        const x1 = xMin + i * stepX;
+                        const x2 = x1 + stepX;
+                        for (let j = 0; j < res; j++) {
+                            const y1 = yMin + j * stepY;
+                            const y2 = y1 + stepY;
+                            const f1 = preset.f(x1, y1);
+                            const f2 = preset.f(x2, y1);
+                            const f3 = preset.f(x1, y2);
+                            const minVal = Math.min(f1, f2, f3);
+                            const maxVal = Math.max(f1, f2, f3);
+                            if (minVal <= lvl && lvl <= maxVal) {
+                                ctx.strokeRect(toPxX(x1), toPxY(y2), toPxX(x2) - toPxX(x1), toPxY(y1) - toPxY(y2));
+                            }
+                        }
+                    }
+                });
+
+                // 最適解マーク (緑 ★)
+                ctx.fillStyle = '#10b981';
+                ctx.beginPath();
+                ctx.arc(toPxX(preset.optX[0]), toPxY(preset.optX[1]), 7, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 鞍点マーク (オレンジ ◆)
+                if (preset.saddlePt) {
+                    ctx.fillStyle = '#f59e0b';
+                    const sx = toPxX(preset.saddlePt[0]), sy = toPxY(preset.saddlePt[1]);
+                    ctx.beginPath();
+                    ctx.moveTo(sx, sy - 8);
+                    ctx.lineTo(sx + 8, sy);
+                    ctx.lineTo(sx, sy + 8);
+                    ctx.lineTo(sx - 8, sy);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+
+                // 各アルゴリズムの軌跡と点
+                const algoKeys = activeMode === 'vs' ? ['gd', 'newton', 'bfgs'] : [activeMode];
+                const colors = { gd: '#f43f5e', newton: '#f59e0b', bfgs: '#38bdf8' };
+
+                algoKeys.forEach(key => {
+                    const data = algos[key];
+                    if (!data || data.history.length === 0) return;
+                    const clr = colors[key];
+
+                    // 軌跡ライン
+                    if (data.history.length > 1) {
+                        ctx.strokeStyle = clr;
+                        ctx.lineWidth = 2.2;
+                        ctx.beginPath();
+                        ctx.moveTo(toPxX(data.history[0].x), toPxY(data.history[0].y));
+                        for (let i = 1; i < data.history.length; i++) {
+                            ctx.lineTo(toPxX(data.history[i].x), toPxY(data.history[i].y));
+                        }
+                        ctx.stroke();
+
+                        // 履歴の点
+                        data.history.forEach((h, idx) => {
+                            ctx.fillStyle = idx === data.history.length - 1 ? '#ffffff' : clr;
+                            ctx.beginPath();
+                            ctx.arc(toPxX(h.x), toPxY(h.y), idx === data.history.length - 1 ? 5 : 3, 0, Math.PI * 2);
+                            ctx.fill();
+                        });
+                    }
+
+                    // 現在のボール
+                    if (data.status !== 'diverged') {
+                        ctx.fillStyle = clr;
+                        ctx.beginPath();
+                        ctx.arc(toPxX(data.pos[0]), toPxY(data.pos[1]), 6, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
+                });
+
+            }, [preset, algos, activeMode, xMin, xMax, yMin, yMax]);
+
+            return (
+                <div class="relative w-full h-[400px] md:h-[460px] rounded-xl overflow-hidden bg-slate-950 border border-slate-800 shadow-inner flex flex-col items-center justify-center">
+                    <canvas
+                        ref={canvasRef}
+                        width={680}
+                        height={460}
+                        onClick={handleCanvasClick}
+                        class="w-full h-full cursor-crosshair"
+                    />
+                    <div class="absolute bottom-2 left-3 text-[11px] text-slate-400 bg-slate-900/85 backdrop-blur px-2.5 py-1 rounded border border-slate-800">
+                        🎯 キャンバスをクリックすると、その座標から探索をやり直せます
+                    </div>
+                </div>
+            );
+        };
+
+        // =========================================================================
+        // 収束スピード比較（片対数グラフ）コンポーネント
+        // =========================================================================
+        const ConvergencePlot = ({ algos, activeMode }) => {
+            const canvasRef = useRef(null);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ctx = canvas.getContext('2d');
+                const W = canvas.width;
+                const H = canvas.height;
+
+                ctx.fillStyle = '#0b1329';
+                ctx.fillRect(0, 0, W, H);
+
+                const padL = 48, padR = 16, padT = 24, padB = 30;
+                const plotW = W - padL - padR;
+                const plotH = H - padT - padB;
+
+                const maxSteps = 40;
+                const logMin = -12;
+                const logMax = 4;
+
+                // 目盛り線
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 1;
+                for (let logVal = logMin; logVal <= logMax; logVal += 4) {
+                    const y = padT + (1.0 - (logVal - logMin) / (logMax - logMin)) * plotH;
+                    ctx.beginPath();
+                    ctx.moveTo(padL, y);
+                    ctx.lineTo(W - padR, y);
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#64748b';
+                    ctx.font = '10px monospace';
+                    ctx.textAlign = 'right';
+                    ctx.fillText(`10^${logVal}`, padL - 6, y + 3);
+                }
+
+                ctx.strokeStyle = '#334155';
+                ctx.beginPath();
+                ctx.moveTo(padL, padT); ctx.lineTo(padL, H - padB);
+                ctx.lineTo(W - padR, H - padB);
+                ctx.stroke();
+
+                // 軸ラベル
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '11px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('反復ステップ k', padL + plotW / 2, H - 8);
+
+                const algoKeys = activeMode === 'vs' ? ['gd', 'newton', 'bfgs'] : [activeMode];
+                const colors = { gd: '#f43f5e', newton: '#f59e0b', bfgs: '#38bdf8' };
+
+                algoKeys.forEach(key => {
+                    const data = algos[key];
+                    if (!data || data.history.length === 0) return;
+                    const clr = colors[key];
+
+                    ctx.strokeStyle = clr;
+                    ctx.lineWidth = 2.0;
+                    ctx.beginPath();
+
+                    data.history.forEach((h, idx) => {
+                        const stepX = padL + (Math.min(idx, maxSteps) / maxSteps) * plotW;
+                        const logVal = Math.log10(Math.max(1e-14, h.fx));
+                        const clampedLog = Math.max(logMin, Math.min(logMax, logVal));
+                        const stepY = padT + (1.0 - (clampedLog - logMin) / (logMax - logMin)) * plotH;
+
+                        if (idx === 0) ctx.moveTo(stepX, stepY);
+                        else ctx.lineTo(stepX, stepY);
+                    });
+                    ctx.stroke();
+
+                    // 最終点
+                    const lastH = data.history[data.history.length - 1];
+                    const lx = padL + (Math.min(data.history.length - 1, maxSteps) / maxSteps) * plotW;
+                    const ly = padT + (1.0 - (Math.max(logMin, Math.min(logMax, Math.log10(Math.max(1e-14, lastH.fx)))) - logMin) / (logMax - logMin)) * plotH;
+                    ctx.fillStyle = clr;
+                    ctx.beginPath();
+                    ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+            }, [algos, activeMode]);
+
+            return (
+                <div class="glass-panel p-3 rounded-xl border border-slate-800">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs font-semibold text-slate-300">📈 目的関数値 f(x_k) の収束スピード（片対数）</span>
+                        <div class="flex items-center gap-2 text-[10px]">
+                            <span class="text-rose-400">● 最急降下 (1次)</span>
+                            <span class="text-amber-400">● ニュートン (2次)</span>
+                            <span class="text-sky-400">● BFGS (超線形)</span>
+                        </div>
+                    </div>
+                    <canvas ref={canvasRef} width={420} height={160} class="w-full h-[140px] rounded" />
+                </div>
+            );
+        };
+
+        // =========================================================================
+        // メインアプリケーション
+        // =========================================================================
+        const App = () => {
+            const [selectedPresetKey, setSelectedPresetKey] = useState('ellipse');
+            const preset = PRESETS[selectedPresetKey];
+
+            // 探索モード: 'vs' (同時対決) | 'newton' | 'bfgs' | 'gd'
+            const [activeMode, setActiveMode] = useState('vs');
+            const [viewMode, setViewMode] = useState('3d'); // '3d' or '2d'
+            const [wireframe, setWireframe] = useState(false);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [playSpeed, setPlaySpeed] = useState(300); // ms per step
+            const [dampedNewton, setDampedNewton] = useState(false); // ニュートン法の直線探索トグル
+
+            // アルゴリズムの状態
+            const [algos, setAlgos] = useState(() => {
+                const p0 = PRESETS.ellipse.defaultPos;
+                const f0 = PRESETS.ellipse.f(p0[0], p0[1]);
+                const g0 = PRESETS.ellipse.grad(p0[0], p0[1]);
+                const gNorm0 = Math.hypot(g0[0], g0[1]);
+                const initHist = [{ step: 0, x: p0[0], y: p0[1], fx: f0, gradNorm: gNorm0, status: 'ready' }];
+                return {
+                    gd: { pos: [...p0], history: [...initHist], status: 'ready' },
+                    newton: { pos: [...p0], history: [...initHist], status: 'ready' },
+                    bfgs: { pos: [...p0], history: [...initHist], status: 'ready', V: [[1.0, 0.0], [0.0, 1.0]] }
+                };
+            });
+
+            // 初期化
+            const initializeAlgos = useCallback((initialPos = null) => {
+                const p0 = initialPos ? [...initialPos] : [...preset.defaultPos];
+                const f0 = preset.f(p0[0], p0[1]);
+                const g0 = preset.grad(p0[0], p0[1]);
+                const gNorm0 = Math.hypot(g0[0], g0[1]);
+
+                setAlgos({
+                    gd: {
+                        pos: [...p0],
+                        history: [{ step: 0, x: p0[0], y: p0[1], fx: f0, gradNorm: gNorm0, status: 'ready' }],
+                        status: 'ready'
+                    },
+                    newton: {
+                        pos: [...p0],
+                        history: [{ step: 0, x: p0[0], y: p0[1], fx: f0, gradNorm: gNorm0, status: 'ready' }],
+                        status: 'ready'
+                    },
+                    bfgs: {
+                        pos: [...p0],
+                        history: [{ step: 0, x: p0[0], y: p0[1], fx: f0, gradNorm: gNorm0, status: 'ready' }],
+                        status: 'ready',
+                        V: [[1.0, 0.0], [0.0, 1.0]] // 単位行列から自己学習スタート
+                    }
+                });
+                setIsPlaying(false);
+            }, [preset]);
+
+            // プリセット変更時にリセット
+            useEffect(() => {
+                initializeAlgos();
+            }, [selectedPresetKey, initializeAlgos]);
+
+            // 1ステップ進める処理
+            const stepForward = useCallback(() => {
+                setAlgos(prev => {
+                    const next = { ...prev };
+                    const activeKeys = activeMode === 'vs' ? ['gd', 'newton', 'bfgs'] : [activeMode];
+                    let allFinished = true;
+
+                    // 1. 最急降下法 (GD)
+                    if (activeKeys.includes('gd') && prev.gd.status !== 'converged' && prev.gd.status !== 'diverged') {
+                        allFinished = false;
+                        const cur = prev.gd.pos;
+                        const g = preset.grad(cur[0], cur[1]);
+                        const eta = preset.gdEta || 0.05;
+                        const nextX = cur[0] - eta * g[0];
+                        const nextY = cur[1] - eta * g[1];
+
+                        if (isNaN(nextX) || isNaN(nextY) || Math.abs(nextX) > 1e4 || Math.abs(nextY) > 1e4) {
+                            next.gd = { ...prev.gd, status: 'diverged' };
+                        } else {
+                            const nextF = preset.f(nextX, nextY);
+                            const nextG = preset.grad(nextX, nextY);
+                            const gNorm = Math.hypot(nextG[0], nextG[1]);
+                            const dist = Math.hypot(nextX - preset.optX[0], nextY - preset.optX[1]);
+                            const st = (dist < 0.02 || gNorm < 1e-3) ? 'converged' : 'running';
+                            const newStep = prev.gd.history.length;
+                            next.gd = {
+                                pos: [nextX, nextY],
+                                history: [...prev.gd.history, { step: newStep, x: nextX, y: nextY, fx: nextF, gradNorm: gNorm, status: st }],
+                                status: st
+                            };
+                        }
+                    }
+
+                    // 2. ニュートン法 (Newton-Raphson)
+                    if (activeKeys.includes('newton') && prev.newton.status !== 'converged' && prev.newton.status !== 'diverged' && prev.newton.status !== 'singular_crash' && prev.newton.status !== 'saddle_trap') {
+                        allFinished = false;
+                        const cur = prev.newton.pos;
+                        const g = preset.grad(cur[0], cur[1]);
+                        const H = preset.hessian(cur[0], cur[1]);
+                        const analysis = analyzeHessian(H);
+
+                        if (analysis.type === 'singular') {
+                            next.newton = { ...prev.newton, status: 'singular_crash' };
+                        } else {
+                            const solved = solveNewtonStep(H, g);
+                            let alpha = 1.0;
+                            if (dampedNewton) {
+                                alpha = armijoLineSearch(preset.f, preset.grad, cur, solved.step);
+                            }
+                            const nextX = cur[0] + alpha * solved.step[0];
+                            const nextY = cur[1] + alpha * solved.step[1];
+
+                            if (isNaN(nextX) || isNaN(nextY) || Math.abs(nextX) > 1e4 || Math.abs(nextY) > 1e4) {
+                                next.newton = { ...prev.newton, status: 'diverged' };
+                            } else {
+                                const nextF = preset.f(nextX, nextY);
+                                const nextG = preset.grad(nextX, nextY);
+                                const gNorm = Math.hypot(nextG[0], nextG[1]);
+                                const dist = Math.hypot(nextX - preset.optX[0], nextY - preset.optX[1]);
+
+                                let st = 'running';
+                                if (dist < 0.01 || gNorm < 1e-4) {
+                                    st = 'converged';
+                                } else if (preset.saddlePt && Math.hypot(nextX - preset.saddlePt[0], nextY - preset.saddlePt[1]) < 0.05) {
+                                    st = 'saddle_trap';
+                                }
+
+                                const newStep = prev.newton.history.length;
+                                next.newton = {
+                                    pos: [nextX, nextY],
+                                    history: [...prev.newton.history, { step: newStep, x: nextX, y: nextY, fx: nextF, gradNorm: gNorm, status: st }],
+                                    status: st
+                                };
+                            }
+                        }
+                    }
+
+                    // 3. 準ニュートン法 (BFGS)
+                    if (activeKeys.includes('bfgs') && prev.bfgs.status !== 'converged' && prev.bfgs.status !== 'diverged') {
+                        allFinished = false;
+                        const cur = prev.bfgs.pos;
+                        const g = preset.grad(cur[0], cur[1]);
+                        const V = prev.bfgs.V;
+
+                        // 探索方向 d = - V g
+                        const d = [
+                            -(V[0][0] * g[0] + V[0][1] * g[1]),
+                            -(V[1][0] * g[0] + V[1][1] * g[1])
+                        ];
+
+                        const alpha = armijoLineSearch(preset.f, preset.grad, cur, d);
+                        const s = [alpha * d[0], alpha * d[1]];
+                        const nextX = cur[0] + s[0];
+                        const nextY = cur[1] + s[1];
+
+                        if (isNaN(nextX) || isNaN(nextY) || Math.abs(nextX) > 1e4 || Math.abs(nextY) > 1e4) {
+                            next.bfgs = { ...prev.bfgs, status: 'diverged' };
+                        } else {
+                            const nextF = preset.f(nextX, nextY);
+                            const nextG = preset.grad(nextX, nextY);
+                            const y = [nextG[0] - g[0], nextG[1] - g[1]];
+                            const nextV = updateBFGS(V, s, y);
+
+                            const gNorm = Math.hypot(nextG[0], nextG[1]);
+                            const dist = Math.hypot(nextX - preset.optX[0], nextY - preset.optX[1]);
+                            const st = (dist < 0.02 || gNorm < 1e-4) ? 'converged' : 'running';
+                            const newStep = prev.bfgs.history.length;
+
+                            next.bfgs = {
+                                pos: [nextX, nextY],
+                                history: [...prev.bfgs.history, { step: newStep, x: nextX, y: nextY, fx: nextF, gradNorm: gNorm, status: st }],
+                                status: st,
+                                V: nextV
+                            };
+                        }
+                    }
+
+                    if (allFinished) {
+                        setIsPlaying(false);
+                    }
+
+                    return next;
+                });
+            }, [activeMode, preset, dampedNewton]);
+
+            // 自動アニメーションループ
+            useEffect(() => {
+                if (!isPlaying) return;
+                const timer = setInterval(() => {
+                    stepForward();
+                }, playSpeed);
+                return () => clearInterval(timer);
+            }, [isPlaying, playSpeed, stepForward]);
+
+            // 現在選択されているアルゴリズムの代表位置におけるヘッセ行列解析
+            const currentRepPos = algos[activeMode === 'vs' ? 'newton' : activeMode]?.pos || preset.defaultPos;
+            const currentHessian = preset.hessian(currentRepPos[0], currentRepPos[1]);
+            const hessianAnalysis = useMemo(() => analyzeHessian(currentHessian), [currentHessian]);
+
+            return (
+                <div class="max-w-7xl mx-auto space-y-4">
+                    {/* ヘッダー */}
+                    <header class="flex flex-col md:flex-row md:items-center justify-between pb-3 border-b border-slate-800 gap-3">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-2xl">🏔️</span>
+                                <h1 class="text-xl md:text-2xl font-bold tracking-tight text-white">
+                                    多次元ニュートン法 vs 準ニュートン法（BFGS）
+                                </h1>
+                            </div>
+                            <p class="text-xs md:text-sm text-slate-400 mt-1">
+                                ヘッセ行列の曲率情報・2次収束の爆発力・鞍点トラップ・特異点クラッシュ・BFGSのセカント学習を3Dで完全可視化
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2 text-xs font-mono bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 self-start md:self-auto">
+                            <span class="text-slate-400">更新式:</span>
+                            <span class="text-amber-400">x_{'{k+1}'} = x_k - [H(x_k)]⁻¹ ∇f(x_k)</span>
+                        </div>
+                    </header>
+
+                    {/* プリセット選択タブ */}
+                    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {Object.values(PRESETS).map(p => (
+                            <button
+                                key={p.id}
+                                onClick={() => setSelectedPresetKey(p.id)}
+                                class={`text-left p-2.5 rounded-lg border transition text-xs relative ${
+                                    selectedPresetKey === p.id
+                                        ? 'bg-blue-950/90 border-blue-500 text-white shadow-lg shadow-blue-950/60'
+                                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                                }`}
+                            >
+                                <div class="font-bold truncate text-slate-100">{p.name}</div>
+                                <div class="text-[10px] text-slate-400 truncate mt-0.5">{p.formula}</div>
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* モード選択 & コントロールバー */}
+                    <div class="glass-panel p-3 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                        {/* アルゴリズム対決セレクター */}
+                        <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+                            <button
+                                onClick={() => { setActiveMode('vs'); initializeAlgos(); }}
+                                class={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition flex items-center gap-1.5 ${
+                                    activeMode === 'vs' ? 'bg-gradient-to-r from-rose-600 via-amber-600 to-sky-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                🤼 3大手法対決
+                            </button>
+                            <button
+                                onClick={() => { setActiveMode('newton'); initializeAlgos(); }}
+                                class={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition ${
+                                    activeMode === 'newton' ? 'bg-amber-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                ⚡ 純粋ニュートン
+                            </button>
+                            <button
+                                onClick={() => { setActiveMode('bfgs'); initializeAlgos(); }}
+                                class={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition ${
+                                    activeMode === 'bfgs' ? 'bg-sky-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                🦅 準ニュートン(BFGS)
+                            </button>
+                            <button
+                                onClick={() => { setActiveMode('gd'); initializeAlgos(); }}
+                                class={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition ${
+                                    activeMode === 'gd' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                🚶 最急降下法
+                            </button>
+                        </div>
+
+                        {/* アニメーション再生コントロール */}
+                        <div class="flex items-center gap-2">
+                            <button
+                                onClick={() => setIsPlaying(!isPlaying)}
+                                class={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition ${
+                                    isPlaying ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                }`}
+                            >
+                                {isPlaying ? <><PauseIcon /> 一時停止</> : <><PlayIcon /> アニメ開始</>}
+                            </button>
+                            <button
+                                onClick={stepForward}
+                                disabled={isPlaying}
+                                class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1 disabled:opacity-40 transition"
+                            >
+                                <StepIcon /> 1歩
+                            </button>
+                            <button
+                                onClick={() => initializeAlgos()}
+                                class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1 transition"
+                            >
+                                <ResetIcon /> リセット
+                            </button>
+                        </div>
+
+                        {/* 表示切り替え（3D vs 2D） & ニュートン直線探索 */}
+                        <div class="flex items-center gap-3 text-xs">
+                            <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+                                <button
+                                    onClick={() => setViewMode('3d')}
+                                    class={`px-2 py-0.5 rounded font-semibold ${viewMode === '3d' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}
+                                >
+                                    🧊 3D曲面
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('2d')}
+                                    class={`px-2 py-0.5 rounded font-semibold ${viewMode === '2d' ? 'bg-sky-600 text-white' : 'text-slate-400'}`}
+                                >
+                                    🗺️ 2D等高線
+                                </button>
+                            </div>
+                            {viewMode === '3d' && (
+                                <label class="flex items-center gap-1.5 text-slate-400 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={wireframe}
+                                        onChange={(e) => setWireframe(e.target.checked)}
+                                        class="rounded bg-slate-900 border-slate-700 text-sky-500"
+                                    />
+                                    ワイヤーフレーム
+                                </label>
+                            )}
+
+                            {/* ニュートン法のダンピング設定（常に配置してレイアウト変動を防止） */}
+                            <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 text-[11px]" title="歩幅を自動調整する直線探索（Armijoバックトラッキング）をニュートン法に適用します">
+                                <input
+                                    type="checkbox"
+                                    checked={dampedNewton}
+                                    onChange={(e) => { setDampedNewton(e.target.checked); initializeAlgos(); }}
+                                    class="rounded bg-slate-900 border-slate-700 text-amber-500"
+                                />
+                                <span>ニュートン直線探索</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    {/* メインレイアウト */}
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        {/* 左側：3D または 2D ビューワー */}
+                        <div class="lg:col-span-8 space-y-3">
+                            <div class="glass-panel p-3 rounded-xl relative shadow-xl">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="text-xs text-slate-300 flex items-center gap-2">
+                                        <span class="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse"></span>
+                                        <span class="font-bold">{preset.name}</span>
+                                        <span class="text-slate-400">（{preset.subtitle}）</span>
+                                    </div>
+                                    <div class="flex items-center gap-2 text-[11px]">
+                                        <span class="flex items-center gap-1 text-emerald-400">
+                                            ● 最小解: ({preset.optX[0]}, {preset.optX[1]})
+                                        </span>
+                                        {preset.saddlePt && (
+                                            <span class="flex items-center gap-1 text-amber-400">
+                                                ◆ 鞍点: ({preset.saddlePt[0]}, {preset.saddlePt[1]})
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {viewMode === '3d' ? (
+                                    <ThreeSurfaceViewer
+                                        preset={preset}
+                                        algos={algos}
+                                        activeMode={activeMode}
+                                        wireframe={wireframe}
+                                    />
+                                ) : (
+                                    <ContourMapView
+                                        preset={preset}
+                                        algos={algos}
+                                        activeMode={activeMode}
+                                        onSetInitialPos={(pos) => initializeAlgos(pos)}
+                                    />
+                                )}
+
+                                {/* 下部：速度調整スライダー & 初期座標調整 */}
+                                <div class="flex flex-wrap items-center justify-between mt-3 pt-2 border-t border-slate-800 text-xs text-slate-400 gap-2">
+                                    <div class="flex items-center gap-3">
+                                        <span>再生速度:</span>
+                                        <input
+                                            type="range"
+                                            min="80"
+                                            max="800"
+                                            step="40"
+                                            value={playSpeed}
+                                            onChange={(e) => setPlaySpeed(Number(e.target.value))}
+                                            class="w-24 cursor-pointer"
+                                        />
+                                        <span class="font-mono text-[11px]">{playSpeed} ms</span>
+                                    </div>
+                                    <div class="flex items-center gap-3 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 text-[11px]">
+                                        <span class="text-slate-300">初期点 (x₀, y₀):</span>
+                                        <label class="flex items-center gap-1 font-mono">
+                                            <span>x:</span>
+                                            <input
+                                                type="range"
+                                                min={preset.xRange[0]}
+                                                max={preset.xRange[1]}
+                                                step="0.1"
+                                                value={algos.gd.history[0]?.x ?? preset.defaultPos[0]}
+                                                onChange={(e) => {
+                                                    const curY = algos.gd.history[0]?.y ?? preset.defaultPos[1];
+                                                    initializeAlgos([parseFloat(e.target.value), curY]);
+                                                }}
+                                                class="w-20 cursor-pointer"
+                                            />
+                                            <span class="w-8 text-right text-sky-400">{(algos.gd.history[0]?.x ?? preset.defaultPos[0]).toFixed(1)}</span>
+                                        </label>
+                                        <label class="flex items-center gap-1 font-mono">
+                                            <span>y:</span>
+                                            <input
+                                                type="range"
+                                                min={preset.yRange[0]}
+                                                max={preset.yRange[1]}
+                                                step="0.1"
+                                                value={algos.gd.history[0]?.y ?? preset.defaultPos[1]}
+                                                onChange={(e) => {
+                                                    const curX = algos.gd.history[0]?.x ?? preset.defaultPos[0];
+                                                    initializeAlgos([curX, parseFloat(e.target.value)]);
+                                                }}
+                                                class="w-20 cursor-pointer"
+                                            />
+                                            <span class="w-8 text-right text-sky-400">{(algos.gd.history[0]?.y ?? preset.defaultPos[1]).toFixed(1)}</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 右側：ヘッセ行列解析 & 収束グラフ & 解説 */}
+                        <div class="lg:col-span-4 space-y-3">
+                            {/* ヘッセ行列 & 曲率インスペクター */}
+                            <div class="glass-panel p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-xs font-bold text-slate-200">🔍 ヘッセ行列 H(x) & 固有値インスペクター</span>
+                                    <span class={`text-[10px] px-2 py-0.5 rounded border font-semibold ${hessianAnalysis.color}`}>
+                                        {hessianAnalysis.label}
+                                    </span>
+                                </div>
+
+                                <div class="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800 font-mono text-xs space-y-1.5">
+                                    <div class="text-[11px] text-slate-400">現在の探索点での 2階偏微分行列:</div>
+                                    <div class="flex items-center justify-center gap-3 py-1">
+                                        <span class="text-slate-400 text-lg">[</span>
+                                        <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 text-center">
+                                            <span class="text-amber-300">{currentHessian[0][0].toFixed(2)}</span>
+                                            <span class="text-slate-300">{currentHessian[0][1].toFixed(2)}</span>
+                                            <span class="text-slate-300">{currentHessian[1][0].toFixed(2)}</span>
+                                            <span class="text-amber-300">{currentHessian[1][1].toFixed(2)}</span>
+                                        </div>
+                                        <span class="text-slate-400 text-lg">]</span>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800 text-[10px]">
+                                        <div>行列式 det(H): <span class="text-sky-300">{hessianAnalysis.det.toFixed(2)}</span></div>
+                                        <div>固有値 λ₁: <span class="text-amber-300">{hessianAnalysis.lambda1.toFixed(2)}</span></div>
+                                        <div class="col-span-2">固有値 λ₂: <span class="text-amber-300">{hessianAnalysis.lambda2.toFixed(2)}</span></div>
+                                    </div>
+                                </div>
+
+                                <p class="text-[11px] text-slate-300 leading-relaxed bg-slate-900/50 p-2 rounded border border-slate-800/80">
+                                    {hessianAnalysis.desc}
+                                </p>
+                            </div>
+
+                            {/* 収束スピード比較（片対数グラフ） */}
+                            <ConvergencePlot algos={algos} activeMode={activeMode} />
+
+                            {/* 理論ミニガイド */}
+                            <div class="glass-panel p-3.5 rounded-xl border border-slate-800 space-y-2 text-xs">
+                                <div class="font-bold text-slate-200 flex items-center gap-1.5">
+                                    <span>💡</span> なぜニュートン法とBFGSが必要なのか？
+                                </div>
+                                <div class="space-y-1.5 text-slate-300 text-[11px] leading-relaxed">
+                                    <p>
+                                        • <strong>最急降下法（1次収束）</strong>：足元の傾きだけを見るため、細い谷で激しくジグザグして停滞します。
+                                    </p>
+                                    <p>
+                                        • <strong>純粋ニュートン法（2次収束）</strong>：曲率（ヘッセ行列）で地形をお椀近似し、二次関数なら1歩で底へジャンプ。しかし鞍点や特異点（ゼロ除算）で吹き飛ぶ致命的弱点があります。
+                                    </p>
+                                    <p>
+                                        • <strong>準ニュートン法 BFGS（超線形収束）</strong>：2階微分を使わずに、歩いた履歴から逆ヘッセ行列を賢く学習。鞍点を回避しつつ超高速に谷を下ります。
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // レンダリングマウント
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
